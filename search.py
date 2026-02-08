@@ -48,6 +48,7 @@ prompt=ChatPromptTemplate.from_template(template)
 
 retriever=vectorstore.as_retriever(search_kwargs={"k":8})
 
+
 #相当于流水线
 rag_chain=(
     {
@@ -65,6 +66,7 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat(request: ChatRequest):
     response = rag_chain.invoke(input=request.message)
+
     return {"response":response}
 
 if __name__ == "__main__":
