@@ -1,1 +1,25 @@
+# --- 机器学习与 RAG 相关 (图片中的大文件) ---
+# 排除本地向量数据库数据
 chroma_db/
+chroma_db.sqlite
+
+# 排除本地模型权重文件 (BGE模型)
+bge-small-zh-v1.5/
+
+# 排除用户上传的测试文档
+uploads/
+
+# --- Python 环境与缓存 ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# --- IDE 配置 ---
+.idea/
+.vscode/
+
+# --- 前端相关 ---
+my-web/node_modules/
+my-web/dist/
