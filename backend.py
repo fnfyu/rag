@@ -1,9 +1,12 @@
+import os
+
 from langchain_classic.indexes import SQLRecordManager
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.document_loaders import TextLoader, UnstructuredFileLoader
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_core.indexing import index
+from langchain_core.retrievers import BaseRetriever
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -16,6 +19,7 @@ class Loader:
     )
     loader=UnstructuredFileLoader(
         file_path="",
+        mode="elements"
     )
     model_name = r"D:\fnfyu\projects\RAG\bge-small-zh-v1.5"
     embeddings = HuggingFaceEmbeddings(
@@ -38,12 +42,16 @@ class Loader:
         persist_directory="./chroma_db",
         embedding_function=embeddings,
     )
-    ensemble_retriever=None
+    ensemble_retriever:BaseRetriever=None
 
     @staticmethod
     def refresh_hybrid_retriever():
         vector_retriever = Loader.vectorstore.as_retriever(search_kwargs={"k": 8})
         all_data = Loader.vectorstore.get()
+        if not all_data["documents"]:
+            Loader.ensemble_retriever=vector_retriever
+            return
+
         all_docs = [
             Document(page_content=text, metadata=meta)
             for text, meta in zip(all_data["documents"], all_data["metadatas"])
@@ -57,15 +65,72 @@ class Loader:
 
         Loader.ensemble_retriever = EnsembleRetriever(
             retrievers=[bm25_retriever, vector_retriever],
-            weights=[0.4, 0.6]
+            weights=[0.5, 0.5]
         )
 
 
     @staticmethod
     def load_and_split(path:str)->int:
+        ext = os.path.splitext(path)[1].lower()
+        is_plain_text = ext in {".txt", ".md", ".py", ".json", ".csv", ".log"}
+
         loader=Loader.loaderANSI if Loader.check_encoding(path) else Loader.loader
         loader.file_path=path
         all_splits = loader.load_and_split(text_splitter=Loader.text_splitter)
+
+        full_text=None
+        if is_plain_text:
+            with open(path, 'r',encoding='gbk' if Loader.check_encoding(path) else 'utf-8',errors='ignore' ) as f:
+                full_text = f.read()
+
+        current_pos=0
+
+        for idx,split in enumerate(all_splits):
+            split.metadata["source_path"]=os.path.abspath(path)
+            split.metadata["filename"]=os.path.basename(path)
+            split.metadata["chunk_index"]=idx
+
+            content=split.page_content.strip()
+            if not content:
+                continue
+            if is_plain_text and full_text:
+                start_index=full_text.find(content[:50],current_pos)
+                if start_index==-1:
+                    # 找不到就退而求其次：别动 current_pos，粗略给个行号或直接跳过行号计算
+                    split.metadata["start_line"] = None
+                    split.metadata["end_line"] = None
+                    continue
+
+                #计算是第几个字符开始的 第几个字符结束的
+                #start_index=split.metadata.get("start_index",0)
+                end_index=start_index+len(content)
+
+                current_pos=end_index
+                #计算从开始字符到结束字符之间有多少个回车就是多少行
+                #计算起始行和结束行
+                split.metadata["start_line"]= full_text.count("\n",0,start_index)+1
+                split.metadata["end_line"]= full_text.count("\n",0,end_index)+1
+
+                split.metadata["chunk_id"]=f'{split.metadata["filename"]}_{split.metadata["start_line"]}'
+            else:
+                # docx / pdf 等：不算原文件“行号”，保留 loader 自带的页码等信息
+                # UnstructuredFileLoader 通常会给 metadata["page_number"] 或类似字段
+                split.metadata.setdefault("start_line", None)
+                split.metadata.setdefault("end_line", None)
+                split.metadata["chunk_id"] = (
+                    f'{split.metadata["filename"]}_chunk_{idx}'
+                )
+
+            # 🔴 在这里加：过滤掉 dict / list 这种复杂 metadata，避免 Chroma 报错
+            clean_meta = {}
+            for k, v in (split.metadata or {}).items():
+                if isinstance(v, (str, int, float, bool)) or v is None:
+                    clean_meta[k] = v
+                else:
+                    # 对于复杂对象（dict/list/tuple等），要么丢弃，要么转成字符串
+                    clean_meta[k] = str(v)
+                    continue
+            split.metadata = clean_meta
 
         index(
             all_splits,

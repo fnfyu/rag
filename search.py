@@ -1,26 +1,18 @@
 import json
 import uuid
-from contextlib import asynccontextmanager
-from http.client import responses
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI
+from fastapi import APIRouter
+from langchain_core.documents import Document
 from pydantic import BaseModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_ollama import ChatOllama
-from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from starlette.responses import StreamingResponse
 
 from backend import Loader
 
-@asynccontextmanager
-async def app_lifespan(app: FastAPI):
-    Loader.refresh_hybrid_retriever()
-    yield
-
-app = FastAPI(lifespan=app_lifespan)
+router = APIRouter()
 
 # model_name=r"D:\fnfyu\projects\RAG\bge-small-zh-v1.5"
 
@@ -58,51 +50,75 @@ template='''
 
 prompt=ChatPromptTemplate.from_template(template)
 
-# class ChatRequest(BaseModel):
-#     message:str
+def build_sources(docs:List[Document])->List[Dict[str, Any]]:
+    sources = []
+    for i,doc in enumerate(docs):
+        meta=doc.metadata or {}
+        sources.append({
+            'id':f'source_{i}',
+            'filename': meta.get('filename'),
+            'source_path': meta.get('source_path'),
+            'start_line': meta.get('start_line'),
+            'end_line': meta.get('end_line'),
+            'chunk_id': meta.get('chunk_id'),
+            "chunk_index": meta.get("chunk_index"),
+            "page_number": meta.get("page_number") or meta.get("page"),  # pdf/docx 常见字段
 
-# 1. 最内层：定义零件（parts）
-class MessagePart(BaseModel):
-    type: str
-    text: str
+        })
+    return sources
 
-# 2. 中间层：定义单条消息（message）
-class Message(BaseModel):
-    id: str
-    role: str
-    parts: List[MessagePart]  # 注意这里是 List
+@router.post('/chat')
+async def chat_endpoint(body:dict):
+    messages=body.get('messages',[])
+    if not messages:
+        return StreamingResponse(
+            iter([b""]),
+            media_type="text/event-stream",
+        )
+    last_msg = messages[-1]
+    parts = last_msg.get("parts") or []
+    user_input = ""
+    for part in reversed(parts):
+        if part.get("type") == "text" and "text" in part:
+            user_input = part.get("text")
+            break
 
-# 3. 最外层：定义整个请求体
-class ChatRequest(BaseModel):
-    id: str
-    messages: List[Message]
-    trigger: Optional[str] = None
+    if not user_input:
+        return StreamingResponse(
+            iter([b""]),
+            media_type="text/event-stream",
+        )
 
-
-@app.post("/chat")
-async def chat_endpoint(request:ChatRequest):
+    docs:List[Document]=await Loader.ensemble_retriever.ainvoke(user_input)
+    context=format_docs(docs)
+    sources=build_sources(docs)
     # 相当于流水线
     rag_chain = (
-            {
-                "context": Loader.ensemble_retriever | format_docs,  # 问题 → 检索器 → 文档列表 → 格式化字符串
-                "query": RunnablePassthrough()
-            }
-            | prompt
+            # {
+            #     "context": Loader.ensemble_retriever | format_docs,  # 问题 → 检索器 → 文档列表 → 格式化字符串
+            #     "query": RunnablePassthrough()
+            # }
+            prompt
             | llm
             | StrOutputParser()
     )
-    user_input = request.messages[-1].parts[0].text
     async def event_stream():
         # 必须先发送一个 start 事件
         message_id = f"msg_{uuid.uuid4().hex}"
         yield f'data: {json.dumps({"type": "start", "messageId": message_id}, ensure_ascii=False)}\n\n'
+
+        # 发一个source块
+        yield f'data: {json.dumps({"type": "data-sources", "data": sources}, ensure_ascii=False)}\n\n'
 
         # 然后开始一个 text 块
         text_id = f"msg_{uuid.uuid4().hex}"
         yield f'data: {json.dumps({"type": "text-start", "id": text_id}, ensure_ascii=False)}\n\n'
 
         # 按 chunk 流式发送 text-delta
-        async for chunk in rag_chain.astream(user_input):
+        async for chunk in rag_chain.astream({
+            "context":context,
+            "query":user_input
+        }):
             if not chunk:
                 continue
             part = {
@@ -114,6 +130,8 @@ async def chat_endpoint(request:ChatRequest):
 
         # 文本结束
         yield f'data: {json.dumps({"type": "text-end", "id": text_id}, ensure_ascii=False)}\n\n'
+
+
 
         # 一条消息结束
         yield f'data: {json.dumps({"type": "finish"}, ensure_ascii=False)}\n\n'
@@ -142,11 +160,6 @@ async def chat_endpoint(request:ChatRequest):
 #     return {"response":response}
 
 
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
 
 
 

@@ -11,6 +11,14 @@ const chat = new Chat({
   },
   onFinish: (message) => {
     console.log('完成:', message)
+  },
+  onData:(part)=>{
+    if (part.type=='data-sources'){
+        const sources=part.data
+        const last=chat.messages[chat.messages.length-1]
+        if(last && last.role=='assistant')
+          last.sources=sources
+    }
   }
 })
 
@@ -41,7 +49,7 @@ const handleFileChange = async (event) => {
 
   try {
     isUploading.value = true
-    const res = await fetch('http://127.0.0.1:12345/upload', {
+    const res = await fetch('http://127.0.0.1:8000/upload', {
       method: 'POST',
       body: formData,
     })
@@ -72,18 +80,14 @@ const handleFileChange = async (event) => {
 
     const upload_id=data.upload_id
 
-    let statusTimer = null
-    if(statusTimer)
-      clearInterval(statusTimer)
-    statusTimer=setInterval(
+    const current_id=setInterval(
       async () => {
       try {
-        const resp = await fetch(`http://127.0.0.1:12345/upload/status?upload_id=${upload_id}`)
+        const resp = await fetch(`http://127.0.0.1:8000/upload/status?upload_id=${upload_id}`)
         if (!resp.ok) return
-        const status = await resp.text()
-        if (status === 'done') {
-          clearInterval(statusTimer)
-          statusTimer = null
+        const status = await resp.json()
+        if (status.status === 'done') {
+          clearInterval(current_id)
           chat.messages.push({
             id: `upload-done-${Date.now()}`,
             role: 'assistant',
@@ -91,7 +95,7 @@ const handleFileChange = async (event) => {
               { type: 'text', text: `文件「${data.filename}」解析完成，现在可以针对这份文件提问了。` }
             ]
           })
-          }
+        }
          } catch (err) {
         console.error('查询上传状态出错', err)
       }
@@ -106,6 +110,18 @@ const handleFileChange = async (event) => {
   } finally {
     isUploading.value = false
     event.target.value = ''
+  }
+}
+
+const handleClickSource=(s)=>{
+  console.log('点击溯源：', s)
+  if (s.start_line && s.source_path) {
+    const vscodeUrl=`vscode://file/${s.source_path}:${s.start_line}`
+    window.location.href = vscodeUrl;
+  }
+  else {
+      console.log("非代码文件，当前路径：", s.source_path);
+      alert(`正在查看：${s.filename}\n位置：第 ${s.page_number || '未知'} 页`);
   }
 }
 </script>
@@ -142,7 +158,34 @@ const handleFileChange = async (event) => {
                 <div v-for="(part, index) in m.parts" :key="index">
                   <p v-if="part.type === 'text'" class="text-content">{{ part.text }}</p>
                 </div>
-              </div>
+
+                 <!-- 溯源区域 -->
+                <div v-if="m.sources && m.sources.length && !chat.isLoading", class="source-list">
+                <div class="source-title">参考资料：</div>
+                  <div    
+                    v-for="s in m.sources" 
+                    :key="s.id" 
+                    class="source-item"
+                    @click="handleClickSource(s)"
+                   >
+                  {{ s.filename || '未知文件' }} 
+                  <!-- 情况 A：纯文本/代码（带行号） -->
+                  <span v-if="s.start_line" class="source-detail">
+                    （第 {{ s.start_line }} - {{ s.end_line }} 行）
+                  </span>
+    
+                  <!-- 情况 B：PDF/Docx（带页码） -->
+                  <span v-else-if="s.page_number" class="source-detail">
+                  （第 {{ s.page_number || s.page }} 页）
+                  </span>
+
+                  <!-- 情况 C：兜底显示 Chunk 序号 -->
+                  <span v-else-if="s.chunk_index" class="source-detail">
+                    （片段 #{{ s.chunk_index }}）
+                  </span>
+                </div>
+               </div>
+              </div>  
               <span class="time-stamp">{{ new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) }}</span>
             </div>
 
@@ -356,5 +399,27 @@ const handleFileChange = async (event) => {
   align-items: center;
   gap: 8px;
   color: #6b7280;
+}
+
+.source-list {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f3f4f6;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.source-title {
+  margin-bottom: 4px;
+}
+
+.source-item {
+  cursor: pointer;
+  color: #2563eb;
+  padding: 2px 0;
+}
+
+.source-item:hover {
+  text-decoration: underline;
 }
 </style>

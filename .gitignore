@@ -11,6 +11,7 @@ uploads/
 
 # --- Python 环境与缓存 ---
 __pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 venv/

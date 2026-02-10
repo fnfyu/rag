@@ -2,30 +2,18 @@ import os
 import shutil
 import uuid
 
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
-from starlette.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File, BackgroundTasks, APIRouter
 
 from backend import Loader
 
-app=FastAPI()
-
-origins=[
-    "http://localhost:5173",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,  # 允许的源列表，如果用"*"则允许所有
-    allow_credentials=True,  # 允许携带 cookie
-    allow_methods=["*"],  # 允许的 HTTP 方法
-    allow_headers=["*"],  # 允许的请求头
-)
+router = APIRouter()
 
 UPLOAD_DIR="./uploads"
 os.makedirs(UPLOAD_DIR,exist_ok=True)
 
 upload_status={}
-@app.post("/upload")
+
+@router.post("/upload")
 async def upload(
     background_tasks: BackgroundTasks,
         file: UploadFile = File(...)
@@ -49,9 +37,9 @@ async def upload(
 def analyze(path:str,upload_id:str):
     print(f"开始后台解析：{path}")
     l=Loader.load_and_split(path)
+    upload_status[upload_id] = 'done'
     print(f"解析入库完成，新增 {l} 条数据")
-    upload_status[upload_id]='done'
 
-@app.get("/upload/status")
+@router.get("/upload/status")
 async def get_upload_status(upload_id:str):
-    return upload_status.get(upload_id)
+    return {"status":upload_status.get(upload_id,'pending')}
