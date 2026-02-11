@@ -1,26 +1,51 @@
 <script setup lang="js">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { Chat } from '@ai-sdk/vue'
 import { DocumentAdd, Promotion, Plus, Loading } from '@element-plus/icons-vue'
 
-const chat = new Chat({
-  api: 'http://localhost:8000/api/chat', 
-  stream: true,
-  headers: {
-    'Accept': 'text/event-stream'
-  },
-  onFinish: (message) => {
-    console.log('完成:', message)
-  },
-  onData:(part)=>{
-    if (part.type=='data-sources'){
-        const sources=part.data
-        const last=chat.messages[chat.messages.length-1]
-        if(last && last.role=='assistant')
-          last.sources=sources
-    }
+const current_conversation_id=ref(null) 
+
+const myOnData=(part)=>{ 
+  if (part.type=='data-sources'){
+     const sources=part.data 
+     const last=chat.messages[chat.messages.length-1] 
+     if(last && last.role=='assistant') last.sources=sources 
+    } 
+  } 
+
+const createChat=()=>{
+   return new Chat({
+     api: `http://localhost:8000/api/chat/${current_conversation_id.value}`, 
+     stream: true, 
+     headers: { 'Accept': 'text/event-stream', 'Content-Type': 'application/json' },
+      onData: myOnData }) 
+    } 
+
+let chat=ref(createChat())
+
+
+onMounted(async()=>{ 
+  await loadConversations()
+   if (conversations.value.length>0){
+     await loadConversation(conversations.value[0].id) } 
+     else{ 
+      await createNewConversation() 
+    } 
+    })
+
+
+onMounted(async()=>{
+  await loadConversations()
+
+  if (conversations.value.length>0){
+    await loadConversation(conversations.value[0].id)
+  }
+  else{
+    await createNewConversation()
   }
 })
+
+const conversations=ref([])
 
 const input = ref("")
 const isUploading = ref(false)
@@ -28,7 +53,7 @@ const fileInputRef = ref(null)
 
 const handleSubmit = (e) => {
   e.preventDefault();
-  chat.sendMessage({ text: input.value });
+  chat.sendMessage({ text:input.value+"---"+current_conversation_id.value });
   input.value = "";
 };
 
@@ -44,9 +69,14 @@ const handleFileChange = async (event) => {
   const file = event.target.files?.[0]
   if (!file) return
 
+  // if (!current_conversation_id.value) {
+  //   await createNewConversation()z
+  // }
+
   const formData = new FormData()
   formData.append('file', file)
-
+  formData.append("conversation_id",current_conversation_id.value)
+console.log(current_conversation_id.value)
   try {
     isUploading.value = true
     const res = await fetch('http://127.0.0.1:8000/upload', {
@@ -113,6 +143,10 @@ const handleFileChange = async (event) => {
   }
 }
 
+const clearMessages=()=>{
+  chat.messages.length=0
+}
+
 const handleClickSource=(s)=>{
   console.log('点击溯源：', s)
   if (s.start_line && s.source_path) {
@@ -124,6 +158,77 @@ const handleClickSource=(s)=>{
       alert(`正在查看：${s.filename}\n位置：第 ${s.page_number || '未知'} 页`);
   }
 }
+
+const loadConversations=async()=>{
+  try{
+    const res=await fetch('http://127.0.0.1:8000/conversations/list')
+    if( res.ok){
+      conversations.value=await res.json()
+    }
+  
+  }
+  catch(err){
+    console.log("加载对话列表失败",err)
+  }
+}
+
+const createNewConversation=async()=>{
+  try{
+    const res=await fetch("http://127.0.0.1:8000/conversations/create",{
+      method:"post",
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '新对话' })
+    })
+    if(res.ok){
+      const newConv=await res.json()
+      await loadConversations() 
+      current_conversation_id.value=newConv.id
+      chat=createChat()
+      clearMessages()
+      console.log('新对话已创建:', newConv.id)
+    }
+
+    
+
+  }
+  catch(err){
+    console.error('创建对话失败',err)
+  }
+}
+
+const loadConversation=async(conversation_id)=>{
+  current_conversation_id.value=conversation_id
+  chat=createChat()
+  try{
+    const res=await fetch(`http://127.0.0.1:8000/conversations/list/${conversation_id}`)
+    if(res.ok){
+      const messages=await res.json()
+      chat.messages=messages
+    }
+
+    
+
+  }
+  catch(err){
+    console.error('加载对话失败',err)
+  }
+
+}
+
+const formatTime = (isoString) => {
+  if (!isoString) return ''
+  const date = new Date(isoString)
+  const now = new Date()
+  const diff = now - date
+  
+  if (diff < 60000) return '刚刚'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)}天前`
+  
+  return date.toLocaleDateString()
+}
+
 </script>
 
 <template>
@@ -131,11 +236,25 @@ const handleClickSource=(s)=>{
     <el-container class="main-layout">
       <el-aside width="240px" class="sidebar hidden-sm-and-down">
         <div class="sidebar-header">
-          <el-button type="primary" plain class="new-chat-btn" icon="Plus">新建对话</el-button>
+          <el-button type="primary" plain class="new-chat-btn" icon="Plus" @click="createNewConversation">新建对话</el-button>
         </div>
         <div class="history-list">
-          <div class="history-item active">RAG 文档解析测试</div>
-        </div>
+        <div 
+          v-for="conv in conversations" 
+          :key="conv.id"
+          :class="['history-item', { active: current_conversation_id === conv.id }]"
+          @click="loadConversation(conv.id)"
+        >
+        <div class="history-title">{{ conv.title }}</div>
+        <div class="history-meta">
+          {{ formatTime(conv.updated_at) }}
+          </div>
+      </div>
+    
+      <div v-if="conversations.length === 0" class="empty-hint">
+        暂无对话记录
+       </div>
+      </div>
       </el-aside>
 
       <el-container class="content-container">
@@ -218,7 +337,9 @@ const handleClickSource=(s)=>{
               <div class="action-bar">
                 <div class="left-actions">
                   <el-tooltip  content="上传文档解析" placement="top">
-                    <el-button circle icon="DocumentAdd" @click="handleClickUpload" :loading="isUploading" />
+                    <el-button circle @click="handleClickUpload" :loading="isUploading" >
+                      <el-icon><DocumentAdd /></el-icon>
+                    </el-button>
                   </el-tooltip>
                 </div>
                 <el-button 

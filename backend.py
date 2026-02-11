@@ -1,5 +1,7 @@
 import os
 
+import chromadb
+from langchain_chroma import Chroma
 from langchain_classic.indexes import SQLRecordManager
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.document_loaders import TextLoader, UnstructuredFileLoader
@@ -9,7 +11,6 @@ from langchain_core.indexing import index
 from langchain_core.retrievers import BaseRetriever
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
 import chardet
 
 class Loader:
@@ -38,16 +39,24 @@ class Loader:
     )#为每个文档块计算唯一哈希值（基于内容 + 元数据）去重
     recordmanager.create_schema()
 
-    vectorstore = Chroma(
-        persist_directory="./chroma_db",
-        embedding_function=embeddings,
-    )
+    chroma_client = chromadb.PersistentClient(path="./chroma_db")
     ensemble_retriever:BaseRetriever=None
 
     @staticmethod
-    def refresh_hybrid_retriever():
-        vector_retriever = Loader.vectorstore.as_retriever(search_kwargs={"k": 8})
-        all_data = Loader.vectorstore.get()
+    def get_vectorstore(collection_name:str):
+        return Chroma(
+            client=Loader.chroma_client,
+            collection_name=collection_name,
+            embedding_function=Loader.embeddings
+        )
+
+
+    @staticmethod
+    def get_ensumble_retriever(collection_name:str):
+        #根据 collection_name 动态构建 ensemble_retriever
+        vectorstore=Loader.get_vectorstore(collection_name=collection_name)
+        vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
+        all_data = vectorstore.get()
         if not all_data["documents"]:
             Loader.ensemble_retriever=vector_retriever
             return
@@ -56,6 +65,7 @@ class Loader:
             Document(page_content=text, metadata=meta)
             for text, meta in zip(all_data["documents"], all_data["metadatas"])
         ]
+
         import jieba
         bm25_retriever = BM25Retriever.from_documents(
             all_docs,
@@ -63,14 +73,14 @@ class Loader:
         )
         bm25_retriever.k = 8
 
-        Loader.ensemble_retriever = EnsembleRetriever(
+        return EnsembleRetriever(
             retrievers=[bm25_retriever, vector_retriever],
             weights=[0.5, 0.5]
         )
 
 
     @staticmethod
-    def load_and_split(path:str)->int:
+    def load_and_split(path:str,collection_name:str)->int:
         ext = os.path.splitext(path)[1].lower()
         is_plain_text = ext in {".txt", ".md", ".py", ".json", ".csv", ".log"}
 
@@ -135,12 +145,13 @@ class Loader:
         index(
             all_splits,
             Loader.recordmanager,
-            Loader.vectorstore,
+            Loader.get_vectorstore(collection_name=collection_name),
             cleanup="incremental",# 增量更新，不重复的跳过
             source_id_key="source"#这是 Document 对象的元数据里存放文件路径或文件名的字段 用来分辨属于哪个文件
         )#去重入库
 
-        Loader.refresh_hybrid_retriever()
+        #Loader.refresh_hybrid_retriever()
+        Loader.get_ensumble_retriever(collection_name=collection_name)
 
         return len(all_splits)
 

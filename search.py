@@ -2,15 +2,15 @@ import json
 import uuid
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from langchain_core.documents import Document
-from pydantic import BaseModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 from starlette.responses import StreamingResponse
 
 from backend import Loader
+from utils import get_collection_name_from_db, insert_conversation_to_db, insert_message_to_db
 
 router = APIRouter()
 
@@ -67,9 +67,13 @@ def build_sources(docs:List[Document])->List[Dict[str, Any]]:
         })
     return sources
 
-@router.post('/chat')
-async def chat_endpoint(body:dict):
+@router.post('/chat/{conversation_id}')
+async def chat_endpoint(
+        conversation_id: str,
+        body:dict=Body(...)
+):
     messages=body.get('messages',[])
+
     if not messages:
         return StreamingResponse(
             iter([b""]),
@@ -88,10 +92,20 @@ async def chat_endpoint(body:dict):
             iter([b""]),
             media_type="text/event-stream",
         )
+    # tmp=user_input.split("---")
+    # user_input,conversation_id=tmp[0],tmp[1]
+    if not conversation_id:
+        return {"error": "缺少 conversation_id"}
 
-    docs:List[Document]=await Loader.ensemble_retriever.ainvoke(user_input)
+    docs:List[Document]=await (Loader.get_ensumble_retriever(
+        get_collection_name_from_db(conversation_id)).
+                               ainvoke(user_input))
+
     context=format_docs(docs)
     sources=build_sources(docs)
+
+    insert_message_to_db(conversation_id,role='user',content=user_input,source=None)
+    insert_message_to_db(conversation_id,role='assistant',content=context,source=sources)
     # 相当于流水线
     rag_chain = (
             # {
