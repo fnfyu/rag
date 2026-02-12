@@ -1,6 +1,6 @@
 import json
 import uuid
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 
 from fastapi import APIRouter, Body
 from langchain_core.documents import Document
@@ -10,7 +10,7 @@ from langchain_ollama import ChatOllama
 from starlette.responses import StreamingResponse
 
 from backend import Loader
-from utils import get_collection_name_from_db, insert_conversation_to_db, insert_message_to_db
+from utils import get_collection_name_from_db,  insert_message_to_db
 
 router = APIRouter()
 
@@ -29,11 +29,6 @@ def format_docs(docs):
 #     persist_directory="./chroma_db",
 #     embedding_function=embeddings
 # )
-
-llm=ChatOllama(
-    model="qwen2.5:7b",
-    temperature=0.1
-)
 
 # query="叶文洁为什么背叛人类?"
 #
@@ -104,8 +99,8 @@ async def chat_endpoint(
     context=format_docs(docs)
     sources=build_sources(docs)
 
-    insert_message_to_db(conversation_id,role='user',content=user_input,source=None)
-    insert_message_to_db(conversation_id,role='assistant',content=context,source=sources)
+    insert_message_to_db(conversation_id,role='user',content=user_input,sources=None)
+
     # 相当于流水线
     rag_chain = (
             # {
@@ -113,7 +108,7 @@ async def chat_endpoint(
             #     "query": RunnablePassthrough()
             # }
             prompt
-            | llm
+            | Loader.llm
             | StrOutputParser()
     )
     async def event_stream():
@@ -128,6 +123,8 @@ async def chat_endpoint(
         text_id = f"msg_{uuid.uuid4().hex}"
         yield f'data: {json.dumps({"type": "text-start", "id": text_id}, ensure_ascii=False)}\n\n'
 
+        full_content=[]
+
         # 按 chunk 流式发送 text-delta
         async for chunk in rag_chain.astream({
             "context":context,
@@ -135,12 +132,16 @@ async def chat_endpoint(
         }):
             if not chunk:
                 continue
+            full_content.append(chunk)
             part = {
                 "type": "text-delta",
                 "id": text_id,
                 "delta": chunk,
             }
             yield f"data: {json.dumps(part, ensure_ascii=False)}\n\n"
+
+        complete_content="".join(full_content)
+        insert_message_to_db(conversation_id,role='assistant',content=complete_content,sources=sources)
 
         # 文本结束
         yield f'data: {json.dumps({"type": "text-end", "id": text_id}, ensure_ascii=False)}\n\n'

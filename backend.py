@@ -9,6 +9,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_core.indexing import index
 from langchain_core.retrievers import BaseRetriever
+from langchain_ollama import ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import chardet
@@ -31,7 +32,13 @@ class Loader:
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
         chunk_overlap=150,
-        separators=["\n\n", "\n", "。", "！", "？"]
+        separators=["\n\n", "\n", "。", "！", "？","”"]
+    )
+    llm = ChatOllama(
+        model="qwen2.5:7b",
+        temperature=0.2,
+        top_k=10,
+
     )
     recordmanager = SQLRecordManager(
         "chroma/my_index",

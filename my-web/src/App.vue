@@ -2,37 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { Chat } from '@ai-sdk/vue'
 import { DocumentAdd, Promotion, Plus, Loading } from '@element-plus/icons-vue'
-
-const current_conversation_id=ref(null) 
-
-const myOnData=(part)=>{ 
-  if (part.type=='data-sources'){
-     const sources=part.data 
-     const last=chat.messages[chat.messages.length-1] 
-     if(last && last.role=='assistant') last.sources=sources 
-    } 
-  } 
-
-const createChat=()=>{
-   return new Chat({
-     api: `http://localhost:8000/api/chat/${current_conversation_id.value}`, 
-     stream: true, 
-     headers: { 'Accept': 'text/event-stream', 'Content-Type': 'application/json' },
-      onData: myOnData }) 
-    } 
-
-let chat=ref(createChat())
-
-
-onMounted(async()=>{ 
-  await loadConversations()
-   if (conversations.value.length>0){
-     await loadConversation(conversations.value[0].id) } 
-     else{ 
-      await createNewConversation() 
-    } 
-    })
-
+import { DefaultChatTransport } from 'ai'
+import { marked } from 'marked'   
 
 onMounted(async()=>{
   await loadConversations()
@@ -45,15 +16,68 @@ onMounted(async()=>{
   }
 })
 
+const current_conversation_id=ref(null) 
+
+const chat=new Chat({
+    transport:new DefaultChatTransport({
+      api: `http://localhost:8000/chat/${current_conversation_id.value}`,
+
+      fetch: async (url, options) => {
+      // url 参数是初始化的 /chat/null，忽略它
+      const id = current_conversation_id.value
+      
+      if (!id) {
+        throw new Error('No conversation_id available')
+      }
+
+      // 构建正确的 URL
+      const realUrl = `http://localhost:8000/chat/${id}`
+      
+      console.log('Fetching to:', realUrl) // 确认正确
+      
+      return fetch(realUrl, options)
+    }
+    })
+
+     , 
+     stream: true, 
+     headers: { 'Accept': 'text/event-stream', 'Content-Type': 'application/json' },
+      onData :(part)=>{ 
+  if (part.type=='data-sources'){
+     const sources=part.data 
+     const last=chat.messages[chat.messages.length-1] 
+     if(last && last.role=='assistant') last.sources=sources 
+    } 
+  } 
+}) 
+
 const conversations=ref([])
 
 const input = ref("")
 const isUploading = ref(false)
 const fileInputRef = ref(null)
 
+const renderMarkdown=(text)=>{
+  if (!text)return ''
+  return marked.parse(text,{async:false})
+}
+
+// 添加：获取消息文本内容
+const getMessageText = (message) => {
+  if (!message.parts) return ''
+  return message.parts
+    .filter(p => p.type === 'text')
+    .map(p => p.text)
+    .join('')
+}
+
 const handleSubmit = (e) => {
   e.preventDefault();
-  chat.sendMessage({ text:input.value+"---"+current_conversation_id.value });
+  chat.sendMessage(
+    {text:input.value},
+    {api:`http://localhost:8000/api/chat/${current_conversation_id.value}`}
+    
+   );
   input.value = "";
 };
 
@@ -76,7 +100,7 @@ const handleFileChange = async (event) => {
   const formData = new FormData()
   formData.append('file', file)
   formData.append("conversation_id",current_conversation_id.value)
-console.log(current_conversation_id.value)
+  console.log(current_conversation_id.value)
   try {
     isUploading.value = true
     const res = await fetch('http://127.0.0.1:8000/upload', {
@@ -183,7 +207,6 @@ const createNewConversation=async()=>{
       const newConv=await res.json()
       await loadConversations() 
       current_conversation_id.value=newConv.id
-      chat=createChat()
       clearMessages()
       console.log('新对话已创建:', newConv.id)
     }
@@ -198,7 +221,6 @@ const createNewConversation=async()=>{
 
 const loadConversation=async(conversation_id)=>{
   current_conversation_id.value=conversation_id
-  chat=createChat()
   try{
     const res=await fetch(`http://127.0.0.1:8000/conversations/list/${conversation_id}`)
     if(res.ok){
@@ -275,7 +297,8 @@ const formatTime = (isoString) => {
             <div class="bubble-container">
               <div class="bubble">
                 <div v-for="(part, index) in m.parts" :key="index">
-                  <p v-if="part.type === 'text'" class="text-content">{{ part.text }}</p>
+                  <p v-if="part.type === 'text' && m.role=='user'" class="text-content">{{ part.text }}</p>
+                  <div v-else-if="part.type === 'text' && m.role === 'assistant'" class="markdown-body" v-html="renderMarkdown(part.text)"></div>
                 </div>
 
                  <!-- 溯源区域 -->
@@ -304,8 +327,7 @@ const formatTime = (isoString) => {
                   </span>
                 </div>
                </div>
-              </div>  
-              <span class="time-stamp">{{ new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) }}</span>
+              </div> 
             </div>
 
             <el-avatar v-if="m.role === 'user'" :size="36" class="avatar" src="https://api.dicebear.com/7.x/adventurer/svg?seed=Aneka" />
@@ -541,6 +563,87 @@ const formatTime = (isoString) => {
 }
 
 .source-item:hover {
+  text-decoration: underline;
+}
+.markdown-body {
+  line-height: 1.6;
+}
+
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) {
+  margin-top: 16px;
+  margin-bottom: 8px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.markdown-body :deep(h1) { font-size: 1.5em; }
+.markdown-body :deep(h2) { font-size: 1.25em; }
+.markdown-body :deep(h3) { font-size: 1.1em; }
+
+.markdown-body :deep(code) {
+  background: #f3f4f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.markdown-body :deep(pre) {
+  background: #f3f4f6;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.markdown-body :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.markdown-body :deep(ul), .markdown-body :deep(ol) {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.markdown-body :deep(li) {
+  margin: 4px 0;
+}
+
+.markdown-body :deep(blockquote) {
+  border-left: 4px solid #e5e7eb;
+  padding-left: 12px;
+  color: #6b7280;
+  margin: 8px 0;
+}
+
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+}
+
+.markdown-body :deep(th), .markdown-body :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.markdown-body :deep(th) {
+  background: #f9fafb;
+  font-weight: 600;
+}
+
+.markdown-body :deep(p) {
+  margin: 8px 0;
+}
+
+.markdown-body :deep(a) {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.markdown-body :deep(a:hover) {
   text-decoration: underline;
 }
 </style>

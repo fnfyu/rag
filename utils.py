@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 
@@ -73,14 +74,14 @@ def get_messages_from_conversation(conversation_id):
     return result
 
 
-def insert_message_to_db(conversation_id:str,role,content,source):
+def insert_message_to_db(conversation_id:str,role,content,sources):
     message_id = f'msg_{uuid.uuid4().hex}'
     conn=get_db_connection()
     cur=conn.cursor()
     cur.execute("""
-    INSERT INTO messages (id,conversation_id, role, content, source)
+    INSERT INTO messages (id,conversation_id, role, content, sources)
     VALUES (%s, %s, %s, %s, %s)
-    """, (message_id, conversation_id, role, content, source))
+    """, (message_id, conversation_id, role, content, json.dumps(sources)))
 
     conn.commit()
     cur.close()

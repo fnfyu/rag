@@ -42,7 +42,17 @@ async def load_conversation(conversation_id:str):
         {
             "id": id,
             "role": role,
-            "content": content,
+            "parts":[
+                {
+                    'type':'text',
+                    'text':content
+                },
+                {
+                    'type':'data-sources',
+                    'data':sources
+                }
+
+            ],
             "sources": sources,
             "created_at": created_at
         }
