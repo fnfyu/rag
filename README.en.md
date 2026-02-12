@@ -15,7 +15,7 @@ An intelligent conversation system based on Retrieval-Augmented Generation (RAG)
 - **Backend**: Python, FastAPI, LangChain
 - **Frontend**: Vue 3, Vite
 - **Vector Database**: Chroma (or compatible vector database)
-- **Database**: SQLite (default)
+- **Database**: SQLite,PostgreSQL
 
 ## Quick Start
 
