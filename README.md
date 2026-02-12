@@ -17,7 +17,7 @@
 - **后端**：Python, FastAPI, LangChain
 - **前端**：Vue 3, Vite
 - **向量数据库**：Chroma（或兼容的向量数据库）
-- **数据库**：SQLite（默认）
+- **数据库**：SQLite,PostgreSQL
 
 ## 快速开始
 
