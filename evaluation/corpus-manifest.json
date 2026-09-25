@@ -1,0 +1,25 @@
+{
+  "snapshot_id": "eval-8d71c7c8720c",
+  "collection_name": "eval_evidence_rag_v1",
+  "corpus": "evaluation/corpus",
+  "files": [
+    {"filename": "citations.md", "source_id": "eval:citations.md", "sha256": "fd3849d8b142fb15b8a94f9585adb00fadd90da2b8b81e918e7a0ccd61dab379", "chunk_count": 1, "expected_first_chunk_id": "eval:citations.md:0:0"},
+    {"filename": "evaluation.md", "source_id": "eval:evaluation.md", "sha256": "e52f944d05abf12669bbf272402b593d2b8aba899e9e347d650a61e59b4bdb0a", "chunk_count": 1, "expected_first_chunk_id": "eval:evaluation.md:0:0"},
+    {"filename": "fallback.md", "source_id": "eval:fallback.md", "sha256": "68213bc0256dc1b887e47f909771ea8e0ad13238fa9e629bcfc430842f39c071", "chunk_count": 1, "expected_first_chunk_id": "eval:fallback.md:0:0"},
+    {"filename": "indexing.md", "source_id": "eval:indexing.md", "sha256": "82e17b1e119e44b9840008dd7371eba5c93c03765c8a39317abcad88d86debe2", "chunk_count": 1, "expected_first_chunk_id": "eval:indexing.md:0:0"},
+    {"filename": "operations.md", "source_id": "eval:operations.md", "sha256": "fb633230ddf20cabc0c4bb5ffd2a15ab23c26837c644833de2d40827612186d6", "chunk_count": 1, "expected_first_chunk_id": "eval:operations.md:0:0"},
+    {"filename": "parent-child.md", "source_id": "eval:parent-child.md", "sha256": "427c42c82346446f89bd67d4954fa2f81cdeb7023bde944c465cf06a43f99804", "chunk_count": 1, "expected_first_chunk_id": "eval:parent-child.md:0:0"},
+    {"filename": "retrieval.md", "source_id": "eval:retrieval.md", "sha256": "c6f41c17396680c3e7bc881e2877b68aada78f856d7ac3168c9b0a15fbfdaec2", "chunk_count": 1, "expected_first_chunk_id": "eval:retrieval.md:0:0"},
+    {"filename": "security.md", "source_id": "eval:security.md", "sha256": "a49f8488d2f254ea161b700dd2518a378ccfeebdb92941560a8eb3a18297ae46", "chunk_count": 1, "expected_first_chunk_id": "eval:security.md:0:0"}
+  ],
+  "chunking": {
+    "judgment_unit": "child",
+    "parent_child_expansion": false,
+    "parent_child_enabled": true,
+    "parent_chunk_size": 1800,
+    "parent_chunk_overlap": 200,
+    "child_chunk_size": 800,
+    "child_chunk_overlap": 150,
+    "expected_id_shape": "source_id:parent_index:child_index"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "dataset_id": "evidence-rag-core-zh",
+  "version": "2026-02-01",
+  "description": "Versioned retrieval qrels; use evaluation/dataset.json for the checked-in benchmark.",
+  "corpus_snapshot_id": "eval-8d71c7c8720c",
+  "judgment_unit": "child",
+  "qrels_exhaustive": true,
+  "cases": [
+    {
+      "id": "example-001",
+      "query": "RRF 如何融合向量和 BM25？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["exact-keyword"],
+      "relevance": [
+        {"chunk_id": "eval:retrieval.md:0:0", "grade": 3}
+      ]
+    }
+  ]
+}

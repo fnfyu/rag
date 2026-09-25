@@ -8,6 +8,8 @@ bge-small-zh-v1.5/
 
 # 排除用户上传的测试文档
 uploads/
+data/
+.env
 
 # --- Python 环境与缓存 ---
 __pycache__/
@@ -15,7 +17,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 venv/
-.env
 
 # --- IDE 配置 ---
 .idea/

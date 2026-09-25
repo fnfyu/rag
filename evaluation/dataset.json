@@ -1,0 +1,188 @@
+{
+  "schema_version": "1.0",
+  "dataset_id": "evidence-rag-core-zh",
+  "version": "2026-02-01",
+  "description": "Evidence RAG 自建中文核心能力标注问题集：覆盖策略语义、关键词、引用、降级、索引链路、父子片段与安全边界。",
+  "corpus": "evaluation/corpus",
+  "corpus_snapshot_id": "eval-8d71c7c8720c",
+  "judgment_unit": "child",
+  "qrels_exhaustive": true,
+  "annotator": "project-owner",
+  "cases": [
+    {
+      "id": "retrieval-001",
+      "query": "Evidence RAG 的四种检索策略分别是什么，rerank 建立在什么基础上？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["semantic", "multi-hop"],
+      "relevance": [
+        {"chunk_id": "eval:retrieval.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "retrieval-002",
+      "query": "Reciprocal Rank Fusion 在这个项目里如何处理向量和关键词结果？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["exact-keyword"],
+      "relevance": [
+        {"chunk_id": "eval:retrieval.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "retrieval-003",
+      "query": "为什么离线评测必须固定 child 片段而不是把 parent expansion 混进召回指标？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["reasoning"],
+      "relevance": [
+        {"chunk_id": "eval:retrieval.md:0:0", "grade": 2},
+        {"chunk_id": "eval:parent-child.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "metrics-001",
+      "query": "Recall@K、MRR 和 nDCG@K 分别衡量什么？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["definition"],
+      "relevance": [
+        {"chunk_id": "eval:evaluation.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "metrics-002",
+      "query": "nDCG 的 graded gain 在评测脚本中如何计算？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["exact-keyword", "graded"],
+      "relevance": [
+        {"chunk_id": "eval:evaluation.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "metrics-003",
+      "query": "为什么评测运行要记录数据集 fingerprint 和模型配置？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["reproducibility"],
+      "relevance": [
+        {"chunk_id": "eval:evaluation.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "citation-001",
+      "query": "[S1] 引用校验能够证明回答的事实一定正确吗？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["citation", "boundary"],
+      "relevance": [
+        {"chunk_id": "eval:citations.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "citation-002",
+      "query": "回答没有来源编号时，系统会把 citation audit 标成什么状态？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["exact-keyword", "citation"],
+      "relevance": [
+        {"chunk_id": "eval:citations.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "fallback-001",
+      "query": "向量检索失败但 BM25 仍然可用时，系统怎样回答？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["degradation", "semantic"],
+      "relevance": [
+        {"chunk_id": "eval:fallback.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "fallback-002",
+      "query": "reranker 没有配置时，为什么不能把结果标成 rerank？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["degradation", "exact-keyword"],
+      "relevance": [
+        {"chunk_id": "eval:fallback.md:0:0", "grade": 3},
+        {"chunk_id": "eval:retrieval.md:0:0", "grade": 1}
+      ]
+    },
+    {
+      "id": "index-001",
+      "query": "上传资料后会经历哪些索引阶段？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["pipeline"],
+      "relevance": [
+        {"chunk_id": "eval:indexing.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "index-002",
+      "query": "重新上传同名文件会不会不断产生重复片段？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["pipeline", "reindex"],
+      "relevance": [
+        {"chunk_id": "eval:indexing.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "parent-001",
+      "query": "子片段和父片段在检索与生成中分别负责什么？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["parent-child"],
+      "relevance": [
+        {"chunk_id": "eval:parent-child.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "parent-002",
+      "query": "聊天来源如何保留命中的 child_chunk_id？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["traceability", "parent-child"],
+      "relevance": [
+        {"chunk_id": "eval:parent-child.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "security-001",
+      "query": "资料里的提示注入为什么不能改变助手的检索规则？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["security", "semantic"],
+      "relevance": [
+        {"chunk_id": "eval:security.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "security-002",
+      "query": "浏览器收到来源时为什么不能包含服务器绝对路径？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["security", "traceability"],
+      "relevance": [
+        {"chunk_id": "eval:security.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "operations-001",
+      "query": "服务启动时会立即加载 embedding 和 Ollama 吗？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["operations"],
+      "relevance": [
+        {"chunk_id": "eval:operations.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "operations-002",
+      "query": "缺少 reranker 配置时，知识库问答是否完全不可用？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["operations", "degradation"],
+      "relevance": [
+        {"chunk_id": "eval:operations.md:0:0", "grade": 2},
+        {"chunk_id": "eval:fallback.md:0:0", "grade": 3}
+      ]
+    },
+    {
+      "id": "cross-001",
+      "query": "怎样同时做到可评估的排序结果和可回看的回答引用？",
+      "collection_name": "eval_evidence_rag_v1",
+      "tags": ["multi-hop", "portfolio"],
+      "relevance": [
+        {"chunk_id": "eval:evaluation.md:0:0", "grade": 2},
+        {"chunk_id": "eval:citations.md:0:0", "grade": 3}
+      ]
+    }
+  ]
+}
