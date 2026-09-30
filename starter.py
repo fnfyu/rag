@@ -57,4 +57,9 @@ async def health() -> dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("starter:app", host="127.0.0.1", port=8000, reload=settings.app_environment == "development")
+    uvicorn.run(
+        "starter:app",
+        host=settings.app_host,
+        port=settings.app_port,
+        reload=settings.app_environment == "development",
+    )

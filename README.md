@@ -53,16 +53,18 @@ Copy-Item .env.example .env
 
 ```dotenv
 DATABASE_URL=postgresql://<user>:<password>@localhost:5432/evidence_rag
-EMBEDDING_MODEL=./models/bge-small-zh-v1.5
+EMBEDDING_MODEL=./bge-small-zh-v1.5
 OLLAMA_MODEL=qwen2.5:7b
 # 可选：启用 Cross-Encoder 二阶段重排
-# RERANKER_MODEL=./models/bge-reranker-v2-m3
+# RERANKER_MODEL=./bge-reranker-v2-m3
+CHROMA_PATH=data/chroma
+UPLOAD_DIR=data/uploads
 QUERY_REWRITE_ENABLED=true
 PARENT_CHILD_ENABLED=true
 # 本地开发可在 my-web/.env.local 设置 VITE_API_KEY；生产不要把长期 API_KEY 注入浏览器，改由同源 HttpOnly 会话或反向代理注入
 ```
 
-> `EMBEDDING_MODEL` 可以是本地路径，也可以是模型标识（如 `BAAI/bge-small-zh-v1.5`）。模型仅在首次上传或提问时加载；没有模型时，服务仍可启动并通过 `/health` 告知缺失配置。
+> `EMBEDDING_MODEL` 可以是本地路径，也可以是模型标识（如 `BAAI/bge-small-zh-v1.5`）。本地权重目录放在仓库根目录（已被 `.gitignore` 排除），例如 `./bge-small-zh-v1.5`。模型仅在首次上传或提问时加载；没有模型时，服务仍可启动并通过 `/health` 告知缺失配置。
 
 ### 3. 运行后端
 

@@ -283,6 +283,8 @@ def evaluate_dataset(
         variant: _empty_summary(normalized_cutoffs) for variant in normalized_variants
     }
     failures: list[dict[str, str]] = []
+    effective_seen: dict[str, list[str]] = {variant: [] for variant in normalized_variants}
+    failed_cases: dict[str, int] = {variant: 0 for variant in normalized_variants}
 
     for case in dataset.cases:
         result: dict[str, Any] = {
@@ -308,7 +310,9 @@ def evaluate_dataset(
             }
             if trace is not None:
                 strategy_result["trace"] = dict(trace)
+                effective_seen[variant].append(str(trace.get("effective_method") or variant))
                 if trace.get("status") == "failed":
+                    failed_cases[variant] += 1
                     failures.append(
                         {
                             "case_id": case.case_id,
@@ -334,6 +338,22 @@ def evaluate_dataset(
         variant: {key: round(value / denominator, 6) for key, value in metrics.items()}
         for variant, metrics in aggregate.items()
     }
+    effective_strategies = {
+        variant: {
+            "requested_method": variant,
+            "effective_method": _summarize_effective_method(variant, effective_seen[variant]),
+            "cases": len(effective_seen[variant]),
+            "degraded_cases": sum(1 for method in effective_seen[variant] if method != variant),
+            "failed_cases": failed_cases[variant],
+        }
+        for variant in normalized_variants
+    }
+    for variant, state in effective_strategies.items():
+        # Aggregates carry the same honesty signal as per-case traces: a degraded
+        # run must not read like a real Cross-Encoder result at summary level.
+        summary[variant]["effective_method"] = state["effective_method"]
+        summary[variant]["degraded_cases"] = state["degraded_cases"]
+        summary[variant]["failed_cases"] = state["failed_cases"]
     return {
         "schema_version": "1.0",
         "dataset": {
@@ -353,6 +373,7 @@ def evaluate_dataset(
             "variants": list(normalized_variants),
             "cutoffs": list(normalized_cutoffs),
             "config": dict(run_config or {}),
+            "effective_strategies": effective_strategies,
             "failures": failures,
         },
         "summary": summary,
@@ -366,6 +387,16 @@ def _empty_summary(cutoffs: Sequence[int]) -> dict[str, float]:
         keys[f"recall@{cutoff}"] = 0.0
         keys[f"ndcg@{cutoff}"] = 0.0
     return keys
+
+
+def _summarize_effective_method(requested: str, seen: Sequence[str]) -> str:
+    """Report which strategy actually produced the results across the run."""
+    unique = sorted(set(seen))
+    if not unique:
+        return "none"
+    if len(unique) == 1:
+        return unique[0]
+    return "mixed"
 
 
 def _normalize_variants(variants: Iterable[str]) -> tuple[str, ...]:

@@ -3,13 +3,18 @@
 chroma_db/
 chroma_db.sqlite
 
-# 排除本地模型权重文件 (BGE模型)
+# 排除本地模型权重文件 (BGE 向量模型与 Cross-Encoder 重排模型)
 bge-small-zh-v1.5/
+bge-reranker-v2-m3/
+models/
 
 # 排除用户上传的测试文档
 uploads/
 data/
 .env
+
+# 排除本地演示资料（保留在工作区，不纳入版本库）
+/job.docx
 
 # --- Python 环境与缓存 ---
 __pycache__/

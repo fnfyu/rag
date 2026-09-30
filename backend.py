@@ -104,10 +104,6 @@ class RAGService:
             logger.exception("query rewrite failed; using the original question")
             return question, "fallback", "query_rewrite_failed"
 
-    def rewrite_query(self, question: str, history: str) -> str:
-        """Backwards-compatible query rewrite interface."""
-        return self.rewrite_query_with_status(question, history)[0]
-
     @property
     def embeddings(self) -> HuggingFaceEmbeddings:
         if self._embeddings is None:
@@ -151,6 +147,22 @@ class RAGService:
         """Check an empty collection without constructing embeddings or an LLM."""
         return self.client.get_or_create_collection(collection_name).count() > 0
 
+    def _hybrid_retriever(
+        self,
+        vector_retriever: Any,
+        lexical_retriever: Any,
+    ) -> HybridRetriever:
+        """Build the retrieval policy in one place so both adapters stay in sync."""
+        return HybridRetriever(
+            vector_retriever=vector_retriever,
+            lexical_retriever=lexical_retriever,
+            candidate_k=self.settings.candidate_k,
+            final_k=self.settings.final_context_k,
+            rrf_k=self.settings.rrf_k,
+            reranker=self._reranker,
+            parent_child_enabled=self.settings.parent_child_enabled,
+        )
+
     def _build_bm25_adapter(self, collection_name: str) -> HybridRetriever:
         """Build a lexical-only adapter from Chroma's raw collection documents.
 
@@ -172,14 +184,9 @@ class RAGService:
 
             bm25_retriever = BM25Retriever.from_documents(bm25_documents, preprocess_func=jieba.lcut)
             bm25_retriever.k = self.settings.candidate_k
-        return HybridRetriever(
+        return self._hybrid_retriever(
             vector_retriever=None,
             lexical_retriever=bm25_retriever,
-            candidate_k=self.settings.candidate_k,
-            final_k=self.settings.final_context_k,
-            rrf_k=self.settings.rrf_k,
-            reranker=self._reranker,
-            parent_child_enabled=self.settings.parent_child_enabled,
         )
 
     def build_bm25_retriever(self, collection_name: str) -> HybridRetriever:
@@ -201,14 +208,9 @@ class RAGService:
             vector_store = self.get_vector_store(collection_name)
             vector_retriever = vector_store.as_retriever(search_kwargs={"k": self.settings.candidate_k})
             lexical_retriever = self.build_bm25_retriever(collection_name).lexical_retriever
-            retriever = HybridRetriever(
+            retriever = self._hybrid_retriever(
                 vector_retriever=vector_retriever,
                 lexical_retriever=lexical_retriever,
-                candidate_k=self.settings.candidate_k,
-                final_k=self.settings.final_context_k,
-                rrf_k=self.settings.rrf_k,
-                reranker=self._reranker,
-                parent_child_enabled=self.settings.parent_child_enabled,
             )
             self._retrievers[collection_name] = retriever
             return retriever

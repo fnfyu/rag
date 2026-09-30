@@ -59,6 +59,38 @@ class EvaluationMetricTests(unittest.TestCase):
                 [{"query": "question", "collection_name": "collection", "relevance": []}]
             )
 
+    def test_degraded_rerank_run_is_visible_in_aggregates(self) -> None:
+        dataset = EvaluationDataset.from_mapping(
+            {
+                "dataset_id": "fixture",
+                "version": "1",
+                "cases": [
+                    {
+                        "id": "q1",
+                        "query": "question",
+                        "collection_name": "collection",
+                        "relevance": [{"chunk_id": "gold", "grade": 3}],
+                    }
+                ],
+            }
+        )
+
+        def retrieve(_case, method, _limit):
+            effective = "rrf" if method == "rerank" else method
+            return RetrievalResult(
+                hits=[{"chunk_id": "gold"}],
+                trace={"effective_method": effective, "status": "fallback" if method == "rerank" else "success"},
+            )
+
+        report = evaluate_dataset(dataset, retrieve, variants=["rrf", "rerank"], cutoffs=[1])
+        # A reranker that never runs must not read like a real Cross-Encoder result.
+        self.assertEqual(report["summary"]["rerank"]["effective_method"], "rrf")
+        self.assertEqual(report["summary"]["rerank"]["degraded_cases"], 1)
+        self.assertEqual(report["run"]["effective_strategies"]["rerank"]["effective_method"], "rrf")
+        self.assertEqual(report["run"]["effective_strategies"]["rerank"]["requested_method"], "rerank")
+        self.assertEqual(report["run"]["effective_strategies"]["rrf"]["degraded_cases"], 0)
+        self.assertEqual(report["summary"]["rrf"]["effective_method"], "rrf")
+
     def test_citation_audit_distinguishes_no_sources(self) -> None:
         valid = validate_citations("结论 [S1]", [{"id": "S1"}])
         empty = validate_citations("没有证据", [])

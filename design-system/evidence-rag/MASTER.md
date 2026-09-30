@@ -231,3 +231,30 @@ Before delivering any UI code, verify:
 - [ ] Responsive: 375px, 768px, 1024px, 1440px
 - [ ] No content hidden behind fixed navbars
 - [ ] No horizontal scroll on mobile
+
+---
+
+## Implementation notes (deviations recorded)
+
+These are deliberate deviations from the generated specification, recorded so the
+next session does not "fix" them back:
+
+- **Typography:** the app uses the system UI stack (`Segoe UI` / `Microsoft YaHei` /
+  `system-ui`) instead of loading Atkinson Hyperlegible from Google Fonts. The repo
+  ships no self-hosted font files and the workspace must render offline without a
+  CDN dependency. Revisit only if a licensed, self-hosted font is added to
+  `my-web/src/assets/ui/fonts/`.
+- **Element Plus mapping:** `style.css:root` maps `--el-color-primary` to the
+  design-system accent (`#2563EB`), `--el-border-radius-base` to `--radius-sm` (8px)
+  and `--el-font-size-base` to 14px, so library components follow this palette
+  instead of the stock Element blue.
+- **Tokens in use:** `--space-*`, `--radius-*`, `--color-primary`, `--color-card`,
+  `--color-foreground`, `--color-muted`, `--color-muted-foreground`, the success/danger
+  palette entries and the shadow tokens are applied in `style.css`. `--color-warning`
+  stays declared but unused: warning surfaces use the darker `#92400e` shade for
+  contrast on tinted cards. Body text and muted text are at or above 4.5:1 against
+  their own surface, and no text is smaller than 12px.
+- **Hover transform conflict:** the card hover in this specification
+  (`translateY(-2px)`, above) contradicts the "Layout-shifting hovers" anti-pattern
+  in the same document. The implementation keeps hover feedback on colour and
+  shadow only; the anti-pattern wins.

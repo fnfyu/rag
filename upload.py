@@ -54,6 +54,10 @@ def _set_task(upload_id: str, **updates: Any) -> None:
         task.update(updates)
         timestamp = _now()
         task["updated_at"] = timestamp
+        stage = task.get("stage")
+        if stage:
+            # The lifecycle contract exposes when each stage was first observed.
+            task.setdefault("stage_timestamps", {}).setdefault(str(stage), timestamp)
         if previous_stage != task.get("stage") or previous_status != task.get("status"):
             events = task.setdefault("events", [])
             events.append(

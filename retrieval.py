@@ -211,10 +211,6 @@ class CrossEncoderReranker:
         finally:
             self._lock.release()
 
-    def rank(self, query: str, documents: list[Document], top_k: int | None = None) -> list[Document]:
-        """Backwards-compatible adapter returning only ranked documents."""
-        return self.rank_with_status(query, documents, top_k).documents
-
     def _record_failure(self, error: Exception, permanentish: bool) -> None:
         self.last_error = str(error)
         self._failure_count += 1
@@ -250,15 +246,6 @@ class HybridRetriever:
         self.rrf_k = rrf_k
         self.reranker = reranker
         self.parent_child_enabled = parent_child_enabled
-
-    def retrieve(
-        self,
-        query: str,
-        limit: int | None = None,
-        method: RetrievalMethod = "rerank",
-    ) -> list[Document]:
-        """Compatibility interface returning final context documents."""
-        return self.retrieve_with_trace(query, method=method, limit=limit, expand_parent=True).documents
 
     def retrieve_with_trace(
         self,
@@ -351,9 +338,6 @@ class HybridRetriever:
         if should_expand and trace.documents:
             trace.documents = self._expand_parent_context(trace.documents, output_limit)
         trace.duration_ms = max(0, round((time.perf_counter() - started) * 1000))
-        for stage in trace.stages.values():
-            if stage.get("duration_ms") == 0:
-                stage["duration_ms"] = trace.duration_ms
         return trace
 
     def _invoke_stage(

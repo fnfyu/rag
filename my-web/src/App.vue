@@ -59,6 +59,30 @@ const viewMode = ref('chat')
 const evaluation = reactive({ status: 'idle', dataset: null, report: null, error: '', warning: '' })
 let disposed = false
 let conversationSelectionSequence = 0
+let scrollFrame = null
+
+const VIEW_TABS = [
+  { id: 'chat', label: '问答', panelId: 'chat-panel', tabId: 'view-tab-chat' },
+  { id: 'evaluation', label: '评测', panelId: 'evaluation-panel', tabId: 'view-tab-evaluation' },
+]
+const tabElements = ref([])
+
+function selectTab(index) {
+  if (!VIEW_TABS[index]) return
+  viewMode.value = VIEW_TABS[index].id
+  nextTick(() => tabElements.value[index]?.focus())
+}
+
+function onTabKeydown(event) {
+  const current = VIEW_TABS.findIndex((tab) => tab.id === viewMode.value)
+  const last = VIEW_TABS.length - 1
+  if (event.key === 'ArrowRight') selectTab((current + 1) % VIEW_TABS.length)
+  else if (event.key === 'ArrowLeft') selectTab((current - 1 + VIEW_TABS.length) % VIEW_TABS.length)
+  else if (event.key === 'Home') selectTab(0)
+  else if (event.key === 'End') selectTab(last)
+  else return
+  event.preventDefault()
+}
 
 const activeConversation = computed(() => conversations.value.find((item) => item.id === currentConversationId.value))
 const knowledgeCount = computed(() => documents.value.reduce((total, item) => total + (item.chunk_count || 0), 0))
@@ -85,11 +109,14 @@ const evaluationSummaryRows = computed(() => {
       return trace?.status === 'fallback' && trace.effective_method === 'rrf'
     }).length
     const failedCount = cases.filter((item) => item.strategies?.[method.id]?.trace?.status === 'failed').length
+    const aggregates = summary[method.id] || {}
     return {
       ...method,
-      values: summary[method.id] || {},
-      fallbackCount,
-      failedCount,
+      values: aggregates,
+      // The report carries its own honesty signal; per-case traces are the fallback.
+      effectiveMethod: aggregates.effective_method || method.id,
+      fallbackCount: aggregates.degraded_cases ?? fallbackCount,
+      failedCount: aggregates.failed_cases ?? failedCount,
     }
   })
 })
@@ -142,9 +169,18 @@ async function request(path, options = {}) {
   throw error
 }
 
-async function scrollToBottom() {
-  await nextTick()
-  if (messageList.value) messageList.value.scrollTop = messageList.value.scrollHeight
+function scrollToBottom(force = false) {
+  const list = messageList.value
+  if (!list || scrollFrame !== null) return
+  // Only follow the stream while the reader is already at the bottom.
+  const pinned = list.scrollHeight - list.scrollTop - list.clientHeight <= 120
+  if (!force && !pinned) return
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = null
+    const current = messageList.value
+    if (current) current.scrollTo({ top: current.scrollHeight, behavior: force && !reduceMotion ? 'smooth' : 'auto' })
+  })
 }
 
 async function loadHealth() {
@@ -227,7 +263,7 @@ async function selectConversation(conversationId, force = false) {
     messages.value = await messageResponse.json()
     documents.value = await documentResponse.json()
     await loadUploadJobs(conversationId, selection)
-    if (selection === conversationSelectionSequence) await scrollToBottom()
+    if (selection === conversationSelectionSequence) scrollToBottom(true)
   } catch (error) {
     if (selection === conversationSelectionSequence) ElMessage.error(error.message)
   } finally {
@@ -321,6 +357,16 @@ function stageLabel(stage) {
     rrf: 'RRF 融合',
     rerank: 'Cross-Encoder 重排',
   }[stage] || stage
+}
+
+function stageStatusLabel(status) {
+  return {
+    success: '成功',
+    fallback: '已降级',
+    failed: '失败',
+    empty: '无结果',
+    skipped: '已跳过',
+  }[status] || status || '未提供'
 }
 
 function methodLabel(method) {
@@ -532,7 +578,7 @@ async function sendMessage() {
   const messagePayload = JSON.parse(JSON.stringify(messages.value))
   input.value = ''
   isSending.value = true
-  await scrollToBottom()
+  scrollToBottom(true)
 
   try {
     const response = await request(`/chat/${conversationIdAtSend}`,  {
@@ -590,7 +636,7 @@ async function sendMessage() {
         buffer = buffer.slice(boundary + 2)
         consumeEvent(eventText)
         boundary = buffer.indexOf('\n\n')
-        await scrollToBottom()
+        scrollToBottom()
       }
     }
     buffer += decoder.decode()
@@ -620,7 +666,7 @@ async function sendMessage() {
   } finally {
     activeReader = null
     isSending.value = false
-    await scrollToBottom()
+    scrollToBottom(true)
   }
 }
 
@@ -647,6 +693,7 @@ onBeforeUnmount(() => {
   disposed = true
   activeReader?.cancel()
   composerObserver?.disconnect()
+  if (scrollFrame !== null) window.cancelAnimationFrame(scrollFrame)
 })
 </script>
 
@@ -705,15 +752,26 @@ onBeforeUnmount(() => {
           <h1>{{ viewMode === 'chat' ? (activeConversation?.title || '选择或创建知识库') : '检索评测结果' }}</h1>
         </div>
         <div class="header-actions">
-          <div class="view-tabs" role="tablist" aria-label="工作台视图">
-            <button type="button" :class="{ active: viewMode === 'chat' }" role="tab" :aria-selected="viewMode === 'chat'" @click="viewMode = 'chat'">问答</button>
-            <button type="button" :class="{ active: viewMode === 'evaluation' }" role="tab" :aria-selected="viewMode === 'evaluation'" @click="viewMode = 'evaluation'">评测</button>
+          <div class="view-tabs" role="tablist" aria-label="工作台视图" @keydown="onTabKeydown">
+            <button
+              v-for="(tab, index) in VIEW_TABS"
+              :key="tab.id"
+              :ref="(element) => { tabElements[index] = element }"
+              :id="tab.tabId"
+              type="button"
+              role="tab"
+              :aria-selected="viewMode === tab.id"
+              :aria-controls="tab.panelId"
+              :tabindex="viewMode === tab.id ? 0 : -1"
+              :class="{ active: viewMode === tab.id }"
+              @click="viewMode = tab.id"
+            >{{ tab.label }}</button>
           </div>
           <el-tag :type="serviceTagType" effect="plain" round>{{ serviceLabel }}</el-tag>
         </div>
       </header>
 
-      <template v-if="viewMode === 'chat'">
+      <section v-if="viewMode === 'chat'" id="chat-panel" class="chat-view" role="tabpanel" :aria-labelledby="VIEW_TABS[0].tabId">
         <section class="knowledge-strip" aria-label="当前知识库状态">
           <div class="metric">
             <span>资料</span>
@@ -798,7 +856,7 @@ onBeforeUnmount(() => {
                   <div class="trace-meta"><span>候选 {{ message.retrievalTrace.candidate_count || 0 }}</span><span>耗时 {{ message.retrievalTrace.duration_ms || 0 }} ms</span><span>查询 {{ message.retrievalTrace.retrieval_query || '原问题' }}</span></div>
                   <div class="stage-list">
                     <div v-for="([stage, detail]) in stageEntries(message.retrievalTrace)" :key="stage" class="stage-row">
-                      <span>{{ stageLabel(stage) }}</span><span>{{ detail.status }} · {{ detail.count || 0 }} · {{ detail.duration_ms || 0 }}ms</span>
+                      <span>{{ stageLabel(stage) }}</span><span>{{ stageStatusLabel(detail.status) }} · {{ detail.count || 0 }} · {{ detail.duration_ms || 0 }}ms</span>
                     </div>
                   </div>
                 </details>
@@ -835,11 +893,11 @@ onBeforeUnmount(() => {
               <el-button native-type="submit" type="primary" :icon="Promotion" :loading="isSending" :disabled="!input.trim() || isSelectingConversation || !currentConversationId">发送</el-button>
             </div>
           </form>
-          <p>回答基于已上传资料生成；引用校验只验证编号，重要信息请回看原文。</p>
+          <p>回答基于已上传资料生成；Enter 发送，Shift + Enter 换行；引用校验只验证编号，重要信息请回看原文。</p>
         </footer>
-      </template>
+      </section>
 
-      <section v-else class="evaluation-view" aria-labelledby="evaluation-title">
+      <section v-else id="evaluation-panel" class="evaluation-view" role="tabpanel" :aria-labelledby="VIEW_TABS[1].tabId">
         <div class="evaluation-intro">
           <div>
             <p class="eyebrow">Retrieval-only benchmark</p>

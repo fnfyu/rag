@@ -122,6 +122,7 @@ def _public_report(report: dict[str, Any]) -> dict[str, Any]:
             "variants": raw_run.get("variants") if isinstance(raw_run.get("variants"), list) else [],
             "cutoffs": raw_run.get("cutoffs") if isinstance(raw_run.get("cutoffs"), list) else [],
             "config": safe_config,
+            "effective_strategies": raw_run.get("effective_strategies") if isinstance(raw_run.get("effective_strategies"), dict) else {},
             "failures": raw_run.get("failures") if isinstance(raw_run.get("failures"), list) else [],
         },
         "summary": report.get("summary") if isinstance(report.get("summary"), dict) else {},

@@ -44,7 +44,7 @@ The full terminology is recorded in [`CONTEXT.md`](../CONTEXT.md); the evaluatio
 1. `evaluation/dataset.json` contains 19 self-built Chinese questions, a corpus snapshot, exhaustive qrels and graded relevance labels.
 2. `scripts/index_evaluation_corpus.py` indexes the checked-in corpus with deterministic `eval:<filename>:0:0` child IDs and writes a file-hash manifest.
 3. `scripts/evaluate_retrieval.py` runs all requested strategies on the same cases and cutoffs. The metric module deduplicates hits, uses `grade >= 1` for Recall/MRR and `2^grade-1` gain for nDCG.
-4. The JSON report contains dataset fingerprint, run configuration, per-strategy summaries, per-query ranked IDs and safe retrieval traces. `rerank` fallback is never presented as a real Cross-Encoder result.
+4. The JSON report contains dataset fingerprint, run configuration, per-strategy summaries, per-query ranked IDs and safe retrieval traces. Each requested method also carries the strategy that actually produced its results (`run.effective_strategies` plus `summary.<method>.effective_method`, `degraded_cases`, `failed_cases`), so `rerank` fallback is never presented as a real Cross-Encoder result.
 5. `GET /evaluations/retrieval/dataset` exposes dataset provenance; `GET /evaluations/retrieval/latest` exposes the latest real report or an explicit `not_run` state. The Vue evaluation view refuses to invent percentages.
 
 ## Operational behavior

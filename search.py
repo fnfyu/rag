@@ -15,7 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from starlette.responses import StreamingResponse
 
 from backend import RAGConfigurationError, get_rag_service
-from citations import validate_citations
+from citations import VALIDATOR_VERSION, validate_citations
 from retrieval import RetrievalTrace
 from security import require_api_key
 from utils import DatabaseNotConfigured, get_collection_name_from_db, insert_message_to_db
@@ -289,7 +289,7 @@ async def chat_endpoint(conversation_id: str, body: dict[str, Any] = Body(...)) 
         citation_validation = (
             {
                 "status": "generation_failed",
-                "validator_version": "1.1",
+                "validator_version": VALIDATOR_VERSION,
                 "cited_ids": [],
                 "unknown_ids": [],
                 "source_count": len(sources),

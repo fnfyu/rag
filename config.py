@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     app_name: str = "Evidence RAG"
     app_environment: str = "development"
+    app_host: str = "127.0.0.1"
+    app_port: int = 8000
     database_url: str | None = None
     api_key: str | None = None
     embedding_model: str | None = None

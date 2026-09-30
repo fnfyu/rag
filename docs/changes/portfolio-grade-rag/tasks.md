@@ -29,3 +29,8 @@
 - **Files:** `README.md`, `README.en.md`, `docs/architecture.md`
 - **Verify:** `git diff --check`
 - **Done when:** 新环境能按文档初始化，且有可直接复用的简历项目亮点。
+
+## 7. 审阅整改（skill 符合度）
+- **Files:** `.gitignore`, `.env.example`, `config.py`, `starter.py`, `README.md`, `evaluation.py`, `evaluation_api.py`, `retrieval.py`, `backend.py`, `search.py`, `upload.py`, `evaluation/README.md`, `tests/test_evaluation.py`, `tests/test_upload_stages.py`, `design-system/evidence-rag/MASTER.md`, `my-web/src/App.vue`, `my-web/src/style.css`, `my-web/README.md`, `my-web/package.json`；删除 `job.docx`（出库）与 `HelloWorld.vue`、`vite.svg`、`vue.svg`
+- **Verify:** `py -3 -m compileall -q *.py scripts` and `py -3 -m unittest discover -s tests` and `npm run build`（在 `my-web`）and `python "<dev-hub-root>/scripts/check-delivery-copy.py" --repo .`
+- **Done when:** 仓库不再包含无关二进制与模板脚手架，本地模型目录被忽略，绑定地址来自环境变量；评测汇总能区分降级与真实重排；上传任务按阶段暴露时间戳；前端 token、字号与对比度符合 MASTER，视图 tabs 具备完整 ARIA 与键盘行为。

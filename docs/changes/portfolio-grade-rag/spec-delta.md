@@ -1,3 +1,18 @@
+## MODIFIED
+
+### Requirement: Retrieval evaluation
+- **WHEN** an evaluation run finishes
+- **THEN** the report states the effective strategy per requested method at run level (`run.effective_strategies`) and repeats it in the aggregates (`summary.<method>.effective_method`, `degraded_cases`, `failed_cases`)
+- **AND** a method whose candidates came from RRF because the reranker was unavailable or failed is never summarised as a real Cross-Encoder result
+
+### Requirement: Retrieval trace
+- **WHEN** a retrieval stage is skipped or never runs
+- **THEN** its `duration_ms` stays 0 instead of being backfilled with the whole-trace duration
+
+### Requirement: Indexing lifecycle
+- **WHEN** an upload task enters a stage
+- **THEN** the task exposes the first timestamp observed for that stage in `stage_timestamps`, in addition to the existing event log
+
 ## ADDED
 
 ### Requirement: Two-stage retrieval
