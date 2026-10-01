@@ -78,7 +78,7 @@ def main() -> None:
     indexed: list[dict[str, object]] = []
     for path, record in zip(files, file_records):
         source_id = str(record["source_id"])
-        chunk_count = service.index_document(path, args.collection, source_id, path.name)
+        chunk_count = service.index_document(path, args.collection, source_id, path.name, structure_enabled=False)
         indexed.append(
             {
                 **record,
@@ -89,6 +89,10 @@ def main() -> None:
 
     manifest = {
         "snapshot_id": snapshot_id,
+        # Descriptive fields outside the hashed legacy chunking contract keep
+        # the existing dataset snapshot stable when actual evidence is unchanged.
+        "indexing_strategy": "legacy_recursive",
+        "structure_indexing_enabled": False,
         "collection_name": args.collection,
         "corpus": str(corpus.relative_to(ROOT)) if corpus.is_relative_to(ROOT) else "local benchmark corpus",
         "files": indexed,

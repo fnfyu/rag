@@ -22,6 +22,7 @@ router = APIRouter(prefix="/conversations", tags=["conversations"], dependencies
 
 class CreateConversationRequest(BaseModel):
     title: str = Field(default="新知识库", min_length=1, max_length=80)
+    knowledge_base_id: str | None = None
 
 
 def _service_unavailable(_: DatabaseNotConfigured) -> HTTPException:
@@ -30,16 +31,20 @@ def _service_unavailable(_: DatabaseNotConfigured) -> HTTPException:
 
 @router.post("", status_code=201)
 @router.post("/create", status_code=201)  # Backward-compatible route for the original client.
-async def create_conversation(payload: CreateConversationRequest) -> dict[str, str]:
+async def create_conversation(payload: CreateConversationRequest) -> dict[str, Any]:
+    if not payload.title.strip():
+        raise HTTPException(status_code=422, detail="会话标题不能为空。")
     conversation_id = f"conv_{uuid.uuid4().hex}"
-    collection_name = f"kb_{uuid.uuid4().hex}"
     try:
-        # Create metadata first. Chroma creates the collection lazily when it receives indexed content.
-        await asyncio.to_thread(insert_conversation_to_db, conversation_id, payload.title.strip(), collection_name)
+        # Without a KB ID the old UI still creates a KB and its first conversation.
+        return await asyncio.to_thread(
+            insert_conversation_to_db, conversation_id, payload.title.strip(),
+            knowledge_base_id=payload.knowledge_base_id,
+        )
     except DatabaseNotConfigured as error:
         raise _service_unavailable(error) from error
-
-    return {"id": conversation_id, "title": payload.title.strip(), "collection_name": collection_name}
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.get("")
@@ -47,7 +52,7 @@ async def create_conversation(payload: CreateConversationRequest) -> dict[str, s
 async def list_conversations() -> list[dict[str, Any]]:
     try:
         rows = await asyncio.to_thread(get_all_conversations)
-        return [{"id": row[0], "title": row[1], "updated_at": row[2]} for row in rows]
+        return [{"id": row[0], "title": row[1], "updated_at": row[2], "knowledge_base_id": row[3]} for row in rows]
     except DatabaseNotConfigured as error:
         raise _service_unavailable(error) from error
 
@@ -68,6 +73,8 @@ async def load_conversation(conversation_id: str) -> list[dict[str, Any]]:
             "sources": row[3] if isinstance(row[3], list) else json.loads(row[3] or "[]"),
             "citationValidation": row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}"),
             "retrievalTrace": row[5] if isinstance(row[5], dict) else json.loads(row[5] or "{}"),
+            "researchTrace": (row[5] if isinstance(row[5], dict) else json.loads(row[5] or "{}")).get("research"),
+            "claimAudit": (row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}")).get("semantic_audit"),
             "created_at": row[6],
         }
         for row in rows

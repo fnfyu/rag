@@ -17,3 +17,7 @@ sentence-transformers>=3.0,<4.0
 jieba>=0.42,<1.0
 rank-bm25>=0.2,<1.0
 unstructured[docx,pdf]>=0.15,<1.0
+# PDF literal blocks, bounding boxes, page previews and real table extraction
+PyMuPDF>=1.24,<2
+# Official game news/product main-text extraction
+beautifulsoup4>=4.12,<5

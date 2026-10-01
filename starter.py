@@ -10,7 +10,11 @@ from backend import get_rag_service
 from config import settings
 from conversation import router as conversation_router
 from evaluation_api import router as evaluation_router
+from knowledge_api import router as knowledge_router
+from report_api import router as report_router
+from document_api import router as document_router
 from search import router as chat_router
+from souls_api import router as souls_router
 from upload import router as upload_router
 
 
@@ -25,8 +29,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Evidence RAG API",
-    version="1.0.0",
-    description="Source-aware hybrid retrieval and streaming knowledge-base Q&A.",
+    version="3.0.0",
+    description="Evidence-driven Souls game guides, official patch intelligence and versioned research delivery.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -41,6 +45,10 @@ app.include_router(chat_router)
 app.include_router(upload_router)
 app.include_router(conversation_router)
 app.include_router(evaluation_router)
+app.include_router(knowledge_router)
+app.include_router(report_router)
+app.include_router(document_router)
+app.include_router(souls_router)
 
 
 @app.get("/", tags=["system"])

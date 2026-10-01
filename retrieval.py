@@ -12,6 +12,7 @@ from typing import Any, Callable, Literal
 
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
+from context_composer import compose_context
 
 logger = logging.getLogger(__name__)
 RetrievalMethod = Literal["vector", "bm25", "rrf", "rerank"]
@@ -238,6 +239,9 @@ class HybridRetriever:
         rrf_k: int,
         reranker: CrossEncoderReranker,
         parent_child_enabled: bool,
+        context_token_budget: int = 6000,
+        context_max_documents: int = 8,
+        context_neighbor_chars: int = 240,
     ) -> None:
         self.vector_retriever = vector_retriever
         self.lexical_retriever = lexical_retriever
@@ -246,6 +250,9 @@ class HybridRetriever:
         self.rrf_k = rrf_k
         self.reranker = reranker
         self.parent_child_enabled = parent_child_enabled
+        self.context_token_budget = context_token_budget
+        self.context_max_documents = context_max_documents
+        self.context_neighbor_chars = context_neighbor_chars
 
     def retrieve_with_trace(
         self,
@@ -262,15 +269,17 @@ class HybridRetriever:
         if limit is not None and limit < 1:
             raise ValueError("retrieval limit must be positive")
         output_limit = min(limit or self.final_k, self.candidate_k)
-        should_expand = self.parent_child_enabled if expand_parent is None else expand_parent
+        should_expand = True if expand_parent is None else expand_parent
         started = time.perf_counter()
         trace = RetrievalTrace(query=query, requested_method=normalized_method)
 
         if normalized_method in ("vector", "bm25"):
-            documents, stage = self._invoke_stage(normalized_method, query, output_limit)
+            documents, stage = self._invoke_stage(normalized_method, query, self.candidate_k if should_expand else output_limit)
             trace.stages[normalized_method] = stage
             trace.candidate_count = len(documents)
-            trace.documents = self._tag_documents(documents, normalized_method)[:output_limit]
+            trace.documents = self._tag_documents(documents, normalized_method)
+            if not should_expand:
+                trace.documents = trace.documents[:output_limit]
             trace.effective_method = normalized_method if trace.documents else "none"
             trace.status = "success" if trace.documents else ("failed" if stage["status"] == "failed" else "empty")
             if stage["status"] == "failed":
@@ -329,14 +338,28 @@ class HybridRetriever:
                 final_documents = fused
                 trace.effective_method = "rrf" if fused else "none"
 
-            trace.documents = final_documents[:output_limit]
+            trace.documents = final_documents if should_expand else final_documents[:output_limit]
             if trace.documents:
                 trace.status = "fallback" if trace.fallback_reason or trace.errors else "success"
             else:
                 trace.status = "failed" if trace.errors else "empty"
 
-        if should_expand and trace.documents:
-            trace.documents = self._expand_parent_context(trace.documents, output_limit)
+        if should_expand:
+            context_started = time.perf_counter()
+            pack = compose_context(
+                trace.documents, token_budget=self.context_token_budget,
+                max_documents=min(output_limit, self.context_max_documents),
+                neighbor_chars=self.context_neighbor_chars,
+            )
+            trace.documents = pack.documents
+            trace.stages["context"] = {
+                "status": "success" if pack.documents else "empty",
+                "count": len(pack.documents),
+                "duration_ms": round((time.perf_counter() - context_started) * 1000),
+                **pack.stats,
+            }
+            if not trace.documents and trace.status in ("success", "fallback"):
+                trace.status = "empty"
         trace.duration_ms = max(0, round((time.perf_counter() - started) * 1000))
         return trace
 
@@ -384,31 +407,14 @@ class HybridRetriever:
             metadata["retrieval_method"] = method
             metadata[f"{method}_rank"] = rank
             metadata.setdefault("candidate_origin", method)
-            tagged.append(Document(page_content=document.page_content, metadata=metadata))
+            tagged.append(Document(page_content=str(metadata.get("original_content", document.page_content)), metadata=metadata))
         return tagged
 
     def _expand_parent_context(self, documents: list[Document], limit: int) -> list[Document]:
-        """Replace child hits with unique parent context while preserving rank metadata."""
-        parents: dict[str, Document] = {}
-        for document in documents:
-            metadata = dict(document.metadata or {})
-            parent_id = metadata.get("parent_id")
-            parent_content = metadata.get("parent_content")
-            if not parent_id or not parent_content:
-                parents.setdefault(self._document_key(document), document)
-                continue
-            if parent_id in parents:
-                continue
-            parent_metadata = {key: value for key, value in metadata.items() if key != "parent_content"}
-            parent_metadata["chunk_id"] = parent_id
-            parent_metadata["child_chunk_id"] = metadata.get("chunk_id")
-            parent_metadata["expanded_from_child"] = True
-            if metadata.get("parent_start_line") is not None:
-                parent_metadata["start_line"] = metadata["parent_start_line"]
-                parent_metadata["end_line"] = metadata.get("parent_end_line")
-            parent_metadata["retrieval_method"] = f"{metadata.get('retrieval_method', 'rrf')}+parent"
-            parents[parent_id] = Document(page_content=str(parent_content), metadata=parent_metadata)
-        return list(parents.values())[:limit]
+        """Compatibility seam: expansion now means budgeted evidence windows."""
+        return compose_context(documents, self.context_token_budget,
+                               min(limit, self.context_max_documents),
+                               self.context_neighbor_chars).documents
 
     def _rrf(self, *result_sets: list[Document]) -> list[Document]:
         scores: dict[str, float] = {}

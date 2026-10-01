@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 import logging
+import json
 from pathlib import Path
 from threading import RLock
 from typing import Any, Callable
@@ -19,6 +20,8 @@ from langchain_ollama import ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from config import Settings, settings
+from context_composer import ContextPack, compose_context
+from structure import structure_parents, structure_children
 from retrieval import CrossEncoderReranker, HybridRetriever, RetrievalMethod, RetrievalTrace
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,7 @@ class RAGService:
         self._client: Any = None
         self._record_manager: SQLRecordManager | None = None
         self._llm: ChatOllama | None = None
+        self._vision_llm: ChatOllama | None = None
         self._reranker = CrossEncoderReranker(
             self.settings.reranker_model,
             self.settings.final_context_k,
@@ -140,6 +144,22 @@ class RAGService:
             self._llm = ChatOllama(**options)
         return self._llm
 
+    @property
+    def vision_llm(self) -> ChatOllama:
+        """Independent lazy vision model; never substitutes the answer model."""
+        model = getattr(self.settings, "vision_model", None)
+        if not model:
+            raise RAGConfigurationError("VISION_MODEL 未配置：图片尚无法解析为视觉描述。")
+        if self._vision_llm is None:
+            options: dict[str, Any] = {
+                "model": model, "temperature": 0,
+                "client_kwargs": {"timeout": getattr(self.settings, "vision_timeout_seconds", 60)},
+            }
+            if self.settings.ollama_base_url:
+                options["base_url"] = self.settings.ollama_base_url
+            self._vision_llm = ChatOllama(**options)
+        return self._vision_llm
+
     def get_vector_store(self, collection_name: str) -> Chroma:
         return Chroma(client=self.client, collection_name=collection_name, embedding_function=self.embeddings)
 
@@ -161,16 +181,19 @@ class RAGService:
             rrf_k=self.settings.rrf_k,
             reranker=self._reranker,
             parent_child_enabled=self.settings.parent_child_enabled,
+            context_token_budget=getattr(self.settings, "context_token_budget", 6000),
+            context_max_documents=getattr(self.settings, "context_max_documents", 8),
+            context_neighbor_chars=getattr(self.settings, "context_neighbor_chars", 240),
         )
 
-    def _build_bm25_adapter(self, collection_name: str) -> HybridRetriever:
+    def _build_bm25_adapter(self, collection_name: str, where: dict | None = None) -> HybridRetriever:
         """Build a lexical-only adapter from Chroma's raw collection documents.
 
         This seam intentionally does not construct ``HuggingFaceEmbeddings``;
         BM25 evaluation remains possible when the vector model is unavailable.
         """
         raw_collection = self.client.get_or_create_collection(collection_name)
-        stored = raw_collection.get(include=["documents", "metadatas"])
+        stored = raw_collection.get(include=["documents", "metadatas"], **({"where": where} if where else {}))
         documents = stored.get("documents") or []
         metadatas = stored.get("metadatas") or [{} for _ in documents]
         bm25_retriever = None
@@ -222,14 +245,37 @@ class RAGService:
         limit: int | None = None,
         method: RetrievalMethod = "rerank",
         expand_parent: bool | None = None,
+        *,
+        where: dict | None = None,
     ) -> RetrievalTrace:
-        """Retrieve through one explicit strategy and return its degradation trace."""
-        retriever = self.build_bm25_retriever(collection_name) if method == "bm25" else self.build_retriever(collection_name)
+        """Apply optional source/version selection before lexical/vector ranking.
+
+        Scoped adapters are not cached, so one request cannot contaminate another.
+        """
+        if where is not None:
+            lexical = self._build_bm25_adapter(collection_name, where=where)
+            if method == "bm25":
+                retriever = lexical
+            else:
+                vector = self.get_vector_store(collection_name).as_retriever(
+                    search_kwargs={"k": self.settings.candidate_k, "filter": where})
+                retriever = self._hybrid_retriever(vector, lexical.lexical_retriever)
+        else:
+            retriever = self.build_bm25_retriever(collection_name) if method == "bm25" else self.build_retriever(collection_name)
         return retriever.retrieve_with_trace(
             query,
             method=method,
             limit=limit,
             expand_parent=expand_parent,
+        )
+
+    def compose_context(self, documents: list[Document], token_budget: int | None = None) -> ContextPack:
+        """Compose raw evidence across retrieval rounds under one estimated budget."""
+        return compose_context(
+            documents,
+            token_budget=getattr(self.settings, "context_token_budget", 6000) if token_budget is None else token_budget,
+            max_documents=getattr(self.settings, "context_max_documents", 8),
+            neighbor_chars=getattr(self.settings, "context_neighbor_chars", 240),
         )
 
     def retrieve_documents(self, query: str, collection_name: str, limit: int | None = None) -> list[Document]:
@@ -276,35 +322,54 @@ class RAGService:
         source_id: str,
         display_filename: str | None = None,
         progress_callback: Callable[[str, int], None] | None = None,
+        *,
+        structure_enabled: bool | None = None,
+        source_metadata: dict | None = None,
     ) -> int:
         def report(stage: str, index: int) -> None:
             if progress_callback:
                 progress_callback(stage, index)
 
         report("parsing", 1)
-        documents = self._load_document(path)
+        documents = (
+            self._load_document(path, source_id=source_id)
+            if path.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+            else self._load_document(path)
+        )
         extracted_chars = sum(len(document.page_content or "") for document in documents)
         if extracted_chars > self.settings.max_extracted_chars:
             raise RAGConfigurationError("Document extracted content exceeds the configured safety limit")
         source_path = str(path.resolve())
         filename = display_filename or path.name
         report("chunking", 2)
+        full_text = self._read_text(path) if path.suffix.lower() in self.text_extensions else None
+        structure_requested = (
+            getattr(self.settings, "structure_indexing_enabled", True)
+            if structure_enabled is None else structure_enabled
+        )
+        use_structure = bool(structure_requested) and path.suffix.lower() in (self.text_extensions | {".pdf"})
         parent_documents = (
-            self._parent_splitter.split_documents(documents)
-            if self.settings.parent_child_enabled
-            else documents
+            structure_parents(documents, full_text, path.suffix.lower() == ".md", self.settings.parent_chunk_size)
+            if use_structure
+            else (self._parent_splitter.split_documents(documents) if self.settings.parent_child_enabled else documents)
         )
         splits: list[Document] = []
-        full_text = self._read_text(path) if path.suffix.lower() in self.text_extensions else None
         parent_cursor = 0
 
         for parent_index, parent in enumerate(parent_documents):
-            parent_content = parent.page_content.strip()
+            parent_content = parent.page_content if use_structure else parent.page_content.strip()
             if not parent_content:
                 continue
             parent_id = f"{source_id}:parent:{parent_index}"
             parent_location: dict[str, int] = {}
-            if full_text:
+            if use_structure and parent.metadata.get("location_scope") == "source":
+                parent_location = {
+                    "parent_start_char": parent.metadata["start_char"],
+                    "parent_end_char": parent.metadata["end_char"],
+                    "parent_start_line": parent.metadata["start_line"],
+                    "parent_end_line": parent.metadata["end_line"],
+                }
+            elif full_text:
                 parent_start = self._find_text_offset(
                     full_text,
                     parent_content,
@@ -315,18 +380,22 @@ class RAGService:
                     parent_end = parent_start + len(parent_content)
                     parent_cursor = max(parent_cursor, parent_end)
                     parent_location = {
+                        "parent_start_char": parent_start,
+                        "parent_end_char": parent_end,
                         "parent_start_line": full_text.count("\n", 0, parent_start) + 1,
-                        "parent_end_line": full_text.count("\n", 0, parent_end) + 1,
+                        "parent_end_line": full_text.count("\n", 0, max(parent_start, parent_end - 1)) + 1,
                     }
-            child_documents = self._child_splitter.split_documents(
-                [Document(page_content=parent_content, metadata=parent.metadata)]
+            child_documents = (
+                structure_children(parent, self.settings.child_chunk_size)
+                if use_structure
+                else self._child_splitter.split_documents([Document(page_content=parent_content, metadata=parent.metadata)])
             )
             for child_index, split in enumerate(child_documents):
-                content = split.page_content.strip()
+                content = split.page_content if use_structure else split.page_content.strip()
                 if not content:
                     continue
                 split.page_content = content
-                split.metadata = self._clean_metadata(split.metadata)
+                split.metadata = self._clean_metadata({**split.metadata, **(source_metadata or {})})
                 split.metadata.update(
                     {
                         "source": source_id,
@@ -339,14 +408,20 @@ class RAGService:
                         **parent_location,
                     }
                 )
+                if parent.metadata.get("location_scope") == "element":
+                    split.metadata["parent_element_start_char"] = parent.metadata.get("element_start_char", 0)
                 if self.settings.parent_child_enabled:
                     split.metadata["parent_content"] = parent_content
+                split.metadata["original_content"] = content
+                prefix = str(split.metadata.get("retrieval_context_prefix") or "")
+                if prefix:
+                    split.page_content = prefix + "\n" + content
                 splits.append(split)
 
         cursor = 0
         for split in splits:
-            content = split.page_content
-            if full_text and content:
+            content = str(split.metadata.get("original_content", split.page_content))
+            if not use_structure and full_text and content:
                 start = self._find_text_offset(
                     full_text,
                     content,
@@ -355,8 +430,10 @@ class RAGService:
                 )
                 if start >= 0:
                     end = start + len(content)
+                    split.metadata["start_char"] = start
+                    split.metadata["end_char"] = end
                     split.metadata["start_line"] = full_text.count("\n", 0, start) + 1
-                    split.metadata["end_line"] = full_text.count("\n", 0, end) + 1
+                    split.metadata["end_line"] = full_text.count("\n", 0, max(start, end - 1)) + 1
                     cursor = max(cursor, end)
 
         non_empty_splits = [split for split in splits if split.page_content]
@@ -413,6 +490,30 @@ class RAGService:
             "parent_child_enabled": self.settings.parent_child_enabled,
             "retrieval_strategy": " + ".join(strategy),
             "embedding_path_exists": path_exists,
+            "capabilities": {
+                "structure_indexing": self.settings.structure_indexing_enabled,
+                "pdf_page_render_enabled": getattr(self.settings, "pdf_page_render_enabled", True),
+                "vision_model_configured": bool(getattr(self.settings, "vision_model", None)),
+                "vision_indexing_enabled": getattr(self.settings, "vision_indexing_enabled", False),
+                "table_analysis": True,
+                "knowledge_base_workspaces": True,
+                "persistent_research_tasks": True,
+                "report_revision_history": True,
+                "document_version_comparison": True,
+                "report_export_formats": ["markdown", "html", "json"],
+                "souls_game_guides": True,
+                "supported_games": ["elden-ring", "nightreign", "dark-souls-1", "dark-souls-2", "dark-souls-3"],
+                "official_game_intelligence": True,
+                "patch_impact_candidates": True,
+                "game_input_calculations": ["stat_budget", "loadout_weight", "table_comparison"],
+                "context_token_budget": self.settings.context_token_budget,
+                "research_model_configured": bool(self.settings.ollama_model),
+                "research_max_rounds": self.settings.research_max_rounds,
+                "graph_enabled": self.settings.graph_enabled,
+                "graph_extraction": "explicit_relations",
+                "claim_audit_enabled": self.settings.claim_audit_enabled,
+                "claim_audit_model_configured": bool(self.settings.ollama_model),
+            },
             "resources_loaded": {
                 "embeddings": self._embeddings is not None,
                 "vector_store": self._client is not None,
@@ -420,7 +521,21 @@ class RAGService:
             },
         }
 
-    def _load_document(self, path: Path) -> list[Document]:
+    def _load_document(self, path: Path, *, source_id: str | None = None) -> list[Document]:
+        extension = path.suffix.lower()
+        if extension in {".pdf", ".png", ".jpg", ".jpeg", ".webp"}:
+            from multimodal import extract_pdf, extract_image
+            model = (self.vision_llm if getattr(self.settings, "vision_indexing_enabled", False)
+                     and getattr(self.settings, "vision_model", None) else None)
+            asset_root = Path(getattr(self.settings, "asset_dir", Path("data/assets")))
+            identity = source_id or str(path.resolve())
+            timeout = getattr(self.settings, "vision_timeout_seconds", 60)
+            if extension == ".pdf":
+                return extract_pdf(path, asset_root, identity, model,
+                                   getattr(self.settings, "vision_max_pages", 8),
+                                   render_enabled=getattr(self.settings, "pdf_page_render_enabled", True),
+                                   timeout_seconds=timeout)
+            return extract_image(path, asset_root, identity, model, timeout_seconds=timeout)
         if path.suffix.lower() in self.text_extensions:
             return TextLoader(str(path), encoding=self._detect_encoding(path), autodetect_encoding=True).load()
         return UnstructuredFileLoader(str(path), mode="elements").load()
@@ -428,7 +543,7 @@ class RAGService:
     @staticmethod
     def _clean_metadata(metadata: dict[str, Any] | None) -> dict[str, str | int | float | bool | None]:
         return {
-            key: value if isinstance(value, (str, int, float, bool)) else str(value)
+            key: value if isinstance(value, (str, int, float, bool)) else json.dumps(value, ensure_ascii=False, default=str)
             for key, value in (metadata or {}).items()
             if value is not None
         }

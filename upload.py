@@ -1,7 +1,9 @@
 """Safe upload endpoint with an observable indexing lifecycle."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import hashlib
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -13,11 +15,15 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from backend import get_rag_service
 from config import settings
 from security import require_api_key
-from utils import DatabaseNotConfigured, get_collection_name_from_db, save_file_record_to_db
+from souls_domain import normalize_metadata
+from utils import DatabaseNotConfigured, get_knowledge_base_id_from_db, save_file_record_to_db
+from workspace_store import (
+    create_document_version, get_knowledge_base, resolve_document_version, update_document_version,
+)
 
 router = APIRouter(prefix="/uploads", tags=["uploads"], dependencies=[Depends(require_api_key)])
 
-ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".csv", ".json", ".py", ".log"}
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".csv", ".json", ".py", ".log", ".png", ".jpg", ".jpeg", ".webp"}
 COPY_CHUNK_SIZE = 1024 * 1024
 STAGE_TOTAL = 5
 logger = logging.getLogger(__name__)
@@ -77,12 +83,22 @@ def _get_task(upload_id: str) -> dict[str, Any] | None:
         return dict(task) if task else None
 
 
-def _list_tasks(conversation_id: str | None = None) -> list[dict[str, Any]]:
+def _list_tasks(conversation_id: str | None = None, knowledge_base_id: str | None = None) -> list[dict[str, Any]]:
     with _upload_lock:
         tasks = list(_upload_tasks.values())
     if conversation_id:
         tasks = [task for task in tasks if task.get("conversation_id") == conversation_id]
+    if knowledge_base_id:
+        tasks = [task for task in tasks if task.get("knowledge_base_id") == knowledge_base_id]
     return [dict(task) for task in sorted(tasks, key=lambda item: item.get("created_at", ""), reverse=True)]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as source:
+        while chunk := source.read(COPY_CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @router.post("", status_code=202)
@@ -90,19 +106,54 @@ def _list_tasks(conversation_id: str | None = None) -> list[dict[str, Any]]:
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    conversation_id: str = Form(...),
+    conversation_id: str | None = Form(default=None),
+    knowledge_base_id: str | None = Form(default=None),
+    version_label: str | None = Form(default=None),
+    release_date: str | None = Form(default=None),
+    applicability: str | None = Form(default=None),
+    domain_metadata: str | None = Form(default=None),
 ) -> dict[str, Any]:
     filename = Path(file.filename or "").name
     extension = Path(filename).suffix.lower()
     if not filename or extension not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=415, detail=f"Unsupported file type. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
 
+    if not conversation_id and not knowledge_base_id:
+        raise HTTPException(status_code=422, detail="conversation_id 或 knowledge_base_id 至少提供一个。")
+    if release_date:
+        try:
+            release_date = date.fromisoformat(release_date).isoformat()
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="release_date 应为 YYYY-MM-DD。") from error
+    else:
+        release_date = None
+    applicability_value: dict | str | None = applicability
+    if applicability:
+        try:
+            decoded = json.loads(applicability)
+            if isinstance(decoded, dict):
+                applicability_value = decoded
+        except json.JSONDecodeError:
+            pass  # Free-text applicability is a valid domain value.
     try:
-        await asyncio.to_thread(get_collection_name_from_db, conversation_id)
+        if conversation_id:
+            conversation_kb = await asyncio.to_thread(get_knowledge_base_id_from_db, conversation_id)
+            if knowledge_base_id and knowledge_base_id != conversation_kb:
+                raise HTTPException(status_code=422, detail="会话不属于指定知识库。")
+            knowledge_base_id = conversation_kb
+        knowledge_base = await asyncio.to_thread(get_knowledge_base, knowledge_base_id)
+        if knowledge_base is None:
+            raise HTTPException(status_code=404, detail="Knowledge base does not exist")
     except DatabaseNotConfigured as error:
         raise HTTPException(status_code=503, detail="数据库服务未配置，请先设置 DATABASE_URL。") from error
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+    try:
+        metadata_value = json.loads(domain_metadata) if domain_metadata else {}
+        metadata_value = normalize_metadata(metadata_value, knowledge_base.get('game_profile') or {}, manual=True)
+    except (ValueError, TypeError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
     settings.ensure_storage_directories()
     upload_id = f"upload_{uuid.uuid4().hex}"
@@ -123,12 +174,43 @@ async def upload_document(
     finally:
         await file.close()
 
-    source_id = f"{conversation_id}:{filename.casefold()}"
+    try:
+        sha256 = await asyncio.to_thread(_sha256, destination)
+        version = await asyncio.to_thread(
+            create_document_version, knowledge_base_id, filename, str(destination), sha256,
+            version_label, release_date, applicability_value, domain_metadata=metadata_value,
+        )
+        private_version = await asyncio.to_thread(resolve_document_version, version['id'])
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    reused = private_version['file_path'] != str(destination)
+    if reused:
+        destination.unlink(missing_ok=True)
+        # If an identical version is already being indexed, return its live job.
+        active = next((task for task in _list_tasks(knowledge_base_id=knowledge_base_id)
+                       if task.get('document_version_id') == version['id'] and task.get('status') in {'queued', 'processing'}), None)
+        if active:
+            return {**active, 'upload_id': active['id'], 'version': version, 'reused': True,
+                    'message': '相同资料版本已在索引队列中。'}
+    destination = Path(private_version['file_path'])
+    source_id = version['source_id']
+    ready = version['status'] == 'ready'
     created_at = _now()
     _set_task(
         upload_id,
         id=upload_id,
         conversation_id=conversation_id,
+        knowledge_base_id=knowledge_base_id,
+        document_series_id=version['document_series_id'],
+        document_version_id=version['id'],
+        source_id=source_id,
+        version_label=version['version_label'],
+        release_date=version['release_date'],
+        applicability=version['applicability'],
+        domain_metadata=version.get('domain_metadata', {}),
+        sha256=sha256,
+        reused=reused,
         filename=filename,
         size=size,
         mime=file.content_type or "application/octet-stream",
@@ -146,11 +228,23 @@ async def upload_document(
         created_at=created_at,
         updated_at=created_at,
     )
-    background_tasks.add_task(_index_upload, destination, upload_id, conversation_id, filename, source_id)
-    return {"upload_id": upload_id, "filename": filename, "status": "queued", "message": "文件已进入索引队列。"}
+    if ready:
+        _set_task(upload_id, status='completed', stage='ready', stage_label='可检索',
+                  stage_index=STAGE_TOTAL, progress=100, chunk_count=version['chunk_count'],
+                  indexed_count=version['chunk_count'], retryable=False)
+    else:
+        background_tasks.add_task(_index_upload, destination, upload_id, conversation_id, filename, source_id,
+                                  knowledge_base['collection_name'], version)
+    return {"upload_id": upload_id, "filename": filename, "status": "completed" if ready else "queued",
+            "knowledge_base_id": knowledge_base_id, "document_series_id": version['document_series_id'],
+            "document_version_id": version['id'], "version": version, "reused": reused,
+            "message": "复用相同资料版本。" if ready else "文件版本已进入索引队列；上传顺序不代表适用性。"}
 
 
-def _index_upload(path: Path, upload_id: str, conversation_id: str, filename: str, source_id: str) -> None:
+def _index_upload(
+    path: Path, upload_id: str, conversation_id: str | None, filename: str,
+    source_id: str, collection_name: str, version: dict[str, Any],
+) -> None:
     _set_task(upload_id, status="processing", stage="parsing", stage_label="解析资料", stage_index=1, progress=None)
 
     def report(stage: str, index: int) -> None:
@@ -163,7 +257,7 @@ def _index_upload(path: Path, upload_id: str, conversation_id: str, filename: st
         }
         _set_task(
             upload_id,
-            status="completed" if stage == "ready" else "processing",
+            status="processing",  # Completed only after version/upload metadata commit.
             stage=stage,
             stage_label=labels.get(stage, stage),
             stage_index=index,
@@ -172,15 +266,31 @@ def _index_upload(path: Path, upload_id: str, conversation_id: str, filename: st
         )
 
     try:
-        collection_name = get_collection_name_from_db(conversation_id)
+        source_metadata = {key: version.get(key) for key in (
+            'knowledge_base_id', 'document_series_id', 'version_label', 'release_date', 'applicability',
+        )}
+        source_metadata['document_version_id'] = version['id']
+        metadata = version.get('domain_metadata') or {}
+        source_metadata['domain_metadata'] = metadata
+        for key, flat in {'game_id': 'game_id', 'edition': 'game_edition', 'patch': 'game_patch',
+                          'dlc': 'game_dlc', 'platform': 'game_platform', 'mode': 'game_mode',
+                          'source_kind': 'source_kind', 'source_tier': 'source_tier', 'source_url': 'source_url',
+                          'captured_at': 'captured_at', 'published_at': 'published_at', 'provenance': 'provenance',
+                          'requires_dlc': 'requires_dlc', 'content_sha256': 'content_sha256',
+                          'capture_sha256': 'capture_sha256'}.items():
+            if key in metadata:
+                source_metadata[flat] = metadata[key]
         chunk_count = get_rag_service().index_document(
             path,
             collection_name,
             source_id,
             filename,
             progress_callback=report,
+            source_metadata=source_metadata,
         )
-        save_file_record_to_db(conversation_id, filename, str(path), chunk_count)
+        save_file_record_to_db(conversation_id, filename, str(path), chunk_count,
+                               version['knowledge_base_id'], version['id'])
+        update_document_version(version['id'], 'ready', chunk_count=chunk_count)
         _set_task(
             upload_id,
             status="completed",
@@ -197,6 +307,10 @@ def _index_upload(path: Path, upload_id: str, conversation_id: str, filename: st
         )
     except Exception:
         logger.exception("document indexing failed for upload %s", upload_id)
+        try:
+            update_document_version(version['id'], 'error', error='文档索引失败，请检查模型与解析器配置。')
+        except Exception:
+            logger.exception('could not persist failed version status for %s', version['id'])
         previous = _get_task(upload_id) or {}
         _set_task(
             upload_id,
@@ -211,9 +325,12 @@ def _index_upload(path: Path, upload_id: str, conversation_id: str, filename: st
 
 
 @router.get("")
-async def list_upload_status(conversation_id: str | None = Query(default=None)) -> list[dict[str, Any]]:
-    """List active-process indexing jobs so the UI can recover after navigation."""
-    return _list_tasks(conversation_id)
+async def list_upload_status(
+    conversation_id: str | None = Query(default=None),
+    knowledge_base_id: str | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """List live jobs; durable queued/ready/error states live on document versions."""
+    return _list_tasks(conversation_id, knowledge_base_id)
 
 
 @router.get("/{upload_id}")

@@ -42,6 +42,33 @@ class Settings(BaseSettings):
     child_chunk_overlap: int = 150
     max_extracted_chars: int = 2_000_000
 
+    # Evidence composition and bounded adaptive research.
+    structure_indexing_enabled: bool = True
+    context_token_budget: int = 6000
+    context_max_documents: int = 8
+    context_neighbor_chars: int = 240
+    research_max_rounds: int = 3
+    research_max_tasks: int = 4
+    research_time_budget_seconds: float = 90.0
+    research_planning_token_budget: int = 16000
+    research_model_timeout_seconds: float = 25.0
+    graph_enabled: bool = True
+    graph_max_hops: int = 2
+    graph_max_expansion_queries: int = 3
+    claim_audit_enabled: bool = True
+    claim_audit_max_claims: int = 12
+    claim_audit_timeout_seconds: float = 45.0
+
+    # Persistent research delivery and page/visual evidence.
+    report_max_sections: int = 8
+    report_worker_timeout_seconds: float = 1200.0
+    asset_dir: Path = Path("data/assets")
+    vision_model: str | None = None
+    vision_indexing_enabled: bool = False
+    pdf_page_render_enabled: bool = True
+    vision_max_pages: int = 8
+    vision_timeout_seconds: float = 60.0
+
     @property
     def record_manager_url(self) -> str:
         return f"sqlite:///{self.record_manager_db.resolve().as_posix()}"
@@ -54,6 +81,7 @@ class Settings(BaseSettings):
         self.chroma_path.mkdir(parents=True, exist_ok=True)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.record_manager_db.parent.mkdir(parents=True, exist_ok=True)
+        self.asset_dir.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "game_id": "dark-souls-1",
+  "articles": [
+    {
+      "external_id": "steam-product-570940",
+      "game_id": "dark-souls-1",
+      "title": "DARK SOULS™: REMASTERED",
+      "url": "https://store.steampowered.com/app/570940/?l=english",
+      "source_url": "https://store.steampowered.com/api/appdetails?appids=570940&l=english",
+      "published_at": null,
+      "captured_at": "2026-10-01T09:33:14.874918+00:00",
+      "patch": null,
+      "edition": "remastered",
+      "content": "Then, there was fire. Re-experience the critically acclaimed, genre-defining game that started it all. Beautifully remastered, return to Lordran in stunning high-definition detail running at 60fps.\nDark Souls Remastered includes the main game plus the Artorias of the Abyss DLC.\nKey features:\n• Deep and Dark Universe\n• Each End is a New Beginning\n• Gameplay Richness and Possibilities\n• Sense of Learning, Mastering and Accomplishment\n• The Way of the Multiplayer (up to 6 players with dedicated servers)",
+      "content_sha256": "0e8f84c85cb6c91bc3dee256ae2ef442508687bf32e235a7bd2e3052c82cc30b",
+      "source_id": "steam-product-570940",
+      "source_tier": "official",
+      "source_kind": "reference",
+      "provenance": "verified_capture",
+      "requires_dlc": [],
+      "mentioned_dlc": [
+        "artorias-of-the-abyss"
+      ],
+      "edition_notes": null,
+      "raw_content": "Then, there was fire. Re-experience the critically acclaimed, genre-defining game that started it all. Beautifully remastered, return to Lordran in stunning high-definition detail running at 60fps. <br />\r\nDark Souls Remastered includes the main game plus the Artorias of the Abyss DLC.<br />\r\n<br />\r\nKey features:<br />\r\n• Deep and Dark Universe <br />\r\n• Each End is a New Beginning<br />\r\n• Gameplay Richness and Possibilities<br />\r\n• Sense of Learning, Mastering and Accomplishment<br />\r\n• The Way of the Multiplayer (up to 6 players with dedicated servers)",
+      "path": "knowledge/souls/dark-souls-1/official-reference.md"
+    }
+  ]
+}

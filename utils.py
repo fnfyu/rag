@@ -28,7 +28,10 @@ def get_db_connection() -> Iterator[Any]:
 
 def get_collection_name_from_db(conversation_id: str) -> str:
     with get_db_connection() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT collection_name FROM conversations WHERE id = %s", (conversation_id,))
+        cursor.execute(
+            "SELECT kb.collection_name FROM conversations c JOIN knowledge_bases kb ON kb.id = c.knowledge_base_id WHERE c.id = %s",
+            (conversation_id,),
+        )
         result = cursor.fetchone()
 
     if not result:
@@ -36,26 +39,50 @@ def get_collection_name_from_db(conversation_id: str) -> str:
     return result[0]
 
 
-def insert_conversation_to_db(conversation_id: str, title: str, collection_name: str) -> None:
+def get_knowledge_base_id_from_db(conversation_id: str) -> str:
     with get_db_connection() as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT knowledge_base_id FROM conversations WHERE id = %s", (conversation_id,))
+        row = cursor.fetchone()
+    if row is None:
+        raise ValueError(f"Conversation '{conversation_id}' does not exist")
+    return row[0]
+
+
+def insert_conversation_to_db(
+    conversation_id: str, title: str, collection_name: str | None = None,
+    knowledge_base_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a conversation in an existing KB, or create both for the old UI."""
+    with get_db_connection() as connection, connection.cursor() as cursor:
+        if knowledge_base_id is None:
+            knowledge_base_id = f"kb_{uuid.uuid4().hex}"
+            collection_name = collection_name or f"kb_collection_{uuid.uuid4().hex}"
+            cursor.execute(
+                "INSERT INTO knowledge_bases (id, title, collection_name) VALUES (%s, %s, %s)",
+                (knowledge_base_id, title, collection_name),
+            )
+        else:
+            cursor.execute("SELECT collection_name FROM knowledge_bases WHERE id = %s", (knowledge_base_id,))
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError(f"Knowledge base '{knowledge_base_id}' does not exist")
+            collection_name = row[0]
         cursor.execute(
-            """
-            INSERT INTO conversations (id, title, collection_name)
-            VALUES (%s, %s, %s)
-            """,
-            (conversation_id, title, collection_name),
+            "INSERT INTO conversations (id, title, collection_name, knowledge_base_id) VALUES (%s, %s, %s, %s) RETURNING created_at, updated_at",
+            (conversation_id, title, collection_name, knowledge_base_id),
         )
+        timestamps = cursor.fetchone()
         connection.commit()
+        return {"id": conversation_id, "title": title, "collection_name": collection_name,
+                "knowledge_base_id": knowledge_base_id, "created_at": timestamps[0], "updated_at": timestamps[1]}
 
 
-def get_all_conversations() -> list[tuple[Any, ...]]:
+def get_all_conversations(knowledge_base_id: str | None = None) -> list[tuple[Any, ...]]:
     with get_db_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
-            """
-            SELECT id, title, updated_at
-            FROM conversations
-            ORDER BY updated_at DESC
-            """
+            "SELECT id, title, updated_at, knowledge_base_id FROM conversations "
+            "WHERE (%s IS NULL OR knowledge_base_id = %s) ORDER BY updated_at DESC",
+            (knowledge_base_id, knowledge_base_id),
         )
         return cursor.fetchall()
 
@@ -103,26 +130,35 @@ def insert_message_to_db(
         connection.commit()
 
 
-def save_file_record_to_db(conversation_id: str, filename: str, file_path: str, chunk_count: int) -> None:
+def save_file_record_to_db(
+    conversation_id: str | None, filename: str, file_path: str, chunk_count: int,
+    knowledge_base_id: str | None = None, document_version_id: str | None = None,
+) -> None:
+    """Append a version's upload record; never delete same-name historical files."""
     with get_db_connection() as connection, connection.cursor() as cursor:
-        cursor.execute(
-            "DELETE FROM uploaded_files WHERE conversation_id = %s AND LOWER(filename) = LOWER(%s)",
-            (conversation_id, filename),
-        )
-        cursor.execute(
-            """
-            INSERT INTO uploaded_files (id, conversation_id, filename, file_path, file_type, chunk_count)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (
-                f"file_{uuid.uuid4().hex}",
-                conversation_id,
-                filename,
-                file_path,
-                filename.rsplit(".", maxsplit=1)[-1].lower() if "." in filename else "unknown",
-                chunk_count,
-            ),
-        )
+        if knowledge_base_id is None and conversation_id:
+            cursor.execute("SELECT knowledge_base_id FROM conversations WHERE id = %s", (conversation_id,))
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError(f"Conversation '{conversation_id}' does not exist")
+            knowledge_base_id = row[0]
+        existing = None
+        if document_version_id:
+            cursor.execute("SELECT id FROM document_versions WHERE id = %s FOR UPDATE", (document_version_id,))
+            if cursor.fetchone() is None:
+                raise ValueError(f"Document version '{document_version_id}' does not exist")
+            cursor.execute("SELECT id FROM uploaded_files WHERE document_version_id = %s LIMIT 1", (document_version_id,))
+            existing = cursor.fetchone()
+        if existing:
+            cursor.execute("UPDATE uploaded_files SET chunk_count = %s WHERE id = %s", (chunk_count, existing[0]))
+        else:
+            cursor.execute(
+                "INSERT INTO uploaded_files (id, conversation_id, filename, file_path, file_type, chunk_count, knowledge_base_id, document_version_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (f"file_{uuid.uuid4().hex}", conversation_id, filename, file_path,
+                 filename.rsplit(".", maxsplit=1)[-1].lower() if "." in filename else "unknown",
+                 chunk_count, knowledge_base_id, document_version_id),
+            )
         connection.commit()
 
 
@@ -130,16 +166,21 @@ def get_files_for_conversation(conversation_id: str) -> list[dict[str, Any]]:
     with get_db_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id, filename, file_type, chunk_count, created_at
-            FROM uploaded_files
-            WHERE conversation_id = %s
-            ORDER BY created_at DESC
+            SELECT f.id, f.filename, f.file_type, f.chunk_count, f.created_at,
+                   f.knowledge_base_id, f.document_version_id, v.version_label, v.release_date, v.applicability, v.status
+            FROM uploaded_files f
+            JOIN conversations c ON c.knowledge_base_id = f.knowledge_base_id
+            LEFT JOIN document_versions v ON v.id = f.document_version_id
+            WHERE c.id = %s
+            ORDER BY f.created_at DESC
             """,
             (conversation_id,),
         )
         rows = cursor.fetchall()
 
     return [
-        {"id": row[0], "filename": row[1], "file_type": row[2], "chunk_count": row[3], "created_at": row[4]}
+        {"id": row[0], "filename": row[1], "file_type": row[2], "chunk_count": row[3], "created_at": row[4],
+         "knowledge_base_id": row[5], "document_version_id": row[6], "version_label": row[7],
+         "release_date": row[8], "applicability": row[9], "status": row[10]}
         for row in rows
     ]

@@ -1,0 +1,58 @@
+{
+  "id": "evidence-research-capabilities-v1",
+  "provenance": "自建虚构部署资料；能力案例，不是公开 benchmark 或真实性证明",
+  "cases": [
+    {
+      "id": "single-fact",
+      "mode": "auto",
+      "question": "Polaris 客户端最低内存是多少？",
+      "tasks": [{"id": "T1", "question": "Polaris 客户端最低内存", "depends_on": [], "required": ["Polaris", "8 GB"], "followup": "Polaris 资源与网络 8 GB"}],
+      "expected_sources": ["polaris.md"],
+      "expected_behavior": "自动路由到快速问答，引用8 GB原文，不启动多轮规划"
+    },
+    {
+      "id": "cross-document-comparison",
+      "mode": "research",
+      "question": "比较 Orion 与 Polaris 的内存、离线能力和运维方式，现场只有 10 GB 内存且无外网时哪套符合要求？",
+      "tasks": [
+        {"id": "T1", "question": "Orion 最低内存 无外网 离线 运维", "depends_on": [], "required": ["Orion", "16 GB", "无外网"], "followup": "Orion 资源与离线能力"},
+        {"id": "T2", "question": "Polaris 最低内存 外网 运维", "depends_on": [], "required": ["Polaris", "8 GB", "外网"], "followup": "Polaris 资源与网络"},
+        {"id": "T3", "question": "Orion Polaris 现场人员 软件升级", "depends_on": [], "required": ["现场人员", "升级"], "followup": "Orion Polaris 运维 升级"}
+      ],
+      "expected_sources": ["orion.md", "polaris.md"],
+      "expected_behavior": "分别给出两方案约束；不强行推荐不符合全部要求的方案；区分资料事实与建议"
+    },
+    {
+      "id": "dependency-multihop",
+      "mode": "research",
+      "question": "Orion 的消息接入最终使用哪个持久队列？重启该队列时必须保留什么？",
+      "tasks": [
+        {"id": "T1", "question": "Orion 消息接入 RelayMesh", "depends_on": [], "required": ["Orion", "RelayMesh"], "followup": "Orion RelayMesh 消息接入"},
+        {"id": "T2", "question": "RelayMesh 持久队列 重启 保留", "depends_on": ["T1"], "required": ["AtlasQueue", "重启", "持久卷"], "followup": "AtlasQueue 重启 保留 SSD持久卷"}
+      ],
+      "expected_sources": ["relations.md", "operations.md"],
+      "expected_behavior": "通过明确关系发现AtlasQueue后查运维；展示跨资料关系路径，不把路径直接当因果证明"
+    },
+    {
+      "id": "version-conflict",
+      "mode": "research",
+      "question": "Orion 的最低内存到底是 16 GB 还是 24 GB？请对比来源并解释冲突。",
+      "tasks": [{"id": "T1", "question": "Orion 最低内存 16 GB 24 GB 修订版 旧方案", "depends_on": [], "required": ["16 GB", "24 GB", "修订"], "followup": "Orion 资源修订 新版 旧方案"}],
+      "expected_sources": ["orion.md", "orion-revision.md"],
+      "expected_behavior": "列出版本差异，说明部署版本未知；语义核验能定位各版本数字"
+    },
+    {
+      "id": "missing-evidence",
+      "mode": "research",
+      "question": "比较 Orion 与 Polaris 的年度总成本，并给出队列故障的精确概率。",
+      "tasks": [{"id": "T1", "question": "Orion Polaris 年度总成本 故障 精确概率", "depends_on": [], "required": ["年度总成本为", "故障概率为"], "followup": "年度费用 数值 故障概率"}],
+      "expected_sources": ["operations.md"],
+      "expected_behavior": "保留证据缺口并按预算停止，不编造价格或概率"
+    }
+  ],
+  "semantic_fixtures": [
+    {"answer": "Polaris 支持完全离线运行。[S1]", "content": "Polaris 依赖持续外网连接，不支持完全离线运行。", "quote": "Polaris 依赖持续外网连接，不支持完全离线运行。", "expected_verdict": "contradicted"},
+    {"answer": "Orion 的最低内存为 16 GB。[S1]", "content": "Orion 的最低内存为 16 GB。", "quote": "Orion 的最低内存为 16 GB。", "expected_verdict": "supported"},
+    {"answer": "AtlasQueue 的故障概率为 0.01%。", "content": "本手册没有给出故障传播概率。", "quote": "", "expected_verdict": "insufficient"}
+  ]
+}

@@ -12,6 +12,12 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import ResearchPanel from './components/ResearchPanel.vue'
+import ClaimAudit from './components/ClaimAudit.vue'
+import TaskWorkspace from './components/TaskWorkspace.vue'
+import DocumentLibrary from './components/DocumentLibrary.vue'
+import PageEvidenceViewer from './components/PageEvidenceViewer.vue'
+import SoulsWorkspace from './components/SoulsWorkspace.vue'
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 // A long-lived backend key must never ship in a production browser bundle.
@@ -35,6 +41,14 @@ const STAGE_LABELS = {
   error: '索引失败',
 }
 
+const knowledgeBases = ref([])
+const currentKnowledgeBaseId = ref(null)
+const kbTitle = ref('')
+const kbDescription = ref('')
+const kbDialogOpen = ref(false)
+const kbCreating = ref(false)
+const kbError = ref('')
+const activeKnowledgeBase = computed(() => knowledgeBases.value.find(item => item.id === currentKnowledgeBaseId.value))
 const conversations = ref([])
 const messages = ref([])
 const documents = ref([])
@@ -42,6 +56,20 @@ const uploadJobs = ref([])
 const currentConversationId = ref(null)
 const input = ref('')
 const isSending = ref(false)
+const researchMode = ref('auto')
+const graphEnabled = ref(true)
+const auditEnabled = ref(true)
+const highlightedQuote = ref('')
+const sourceContent = computed(() => String(selectedSource.value?.content ?? selectedSource.value?.excerpt ?? '没有返回完整证据内容。'))
+const sourceSections = computed(() => sectionLabel(selectedSource.value))
+const highlightedContent = computed(() => {
+  const text = sourceContent.value
+  const quote = highlightedQuote.value
+  if (!quote) return [{ text, highlighted: false }]
+  const index = text.indexOf(quote)
+  if (index < 0) return [{ text, highlighted: false }]
+  return [{ text: text.slice(0, index), highlighted: false }, { text: quote, highlighted: true }, { text: text.slice(index + quote.length), highlighted: false }]
+})
 const isUploading = ref(false)
 const isSelectingConversation = ref(false)
 const fileInput = ref(null)
@@ -56,6 +84,8 @@ const healthError = ref('')
 const conversationError = ref('')
 const connectionError = computed(() => healthError.value || conversationError.value)
 const viewMode = ref('chat')
+const requestedTaskId = ref(null)
+function openTask(id) { requestedTaskId.value = id; viewMode.value = 'tasks' }
 const evaluation = reactive({ status: 'idle', dataset: null, report: null, error: '', warning: '' })
 let disposed = false
 let conversationSelectionSequence = 0
@@ -63,7 +93,10 @@ let scrollFrame = null
 
 const VIEW_TABS = [
   { id: 'chat', label: '问答', panelId: 'chat-panel', tabId: 'view-tab-chat' },
+  { id: 'tasks', label: '研究交付', panelId: 'tasks-panel', tabId: 'view-tab-tasks' },
+  { id: 'documents', label: '资料版本', panelId: 'documents-panel', tabId: 'view-tab-documents' },
   { id: 'evaluation', label: '评测', panelId: 'evaluation-panel', tabId: 'view-tab-evaluation' },
+  { id: 'souls', label: '游戏攻略', panelId: 'souls-panel', tabId: 'view-tab-souls' },
 ]
 const tabElements = ref([])
 
@@ -87,7 +120,7 @@ function onTabKeydown(event) {
 const activeConversation = computed(() => conversations.value.find((item) => item.id === currentConversationId.value))
 const knowledgeCount = computed(() => documents.value.reduce((total, item) => total + (item.chunk_count || 0), 0))
 const activeUpload = computed(() => {
-  const current = uploadJobs.value.filter((job) => job.conversation_id === currentConversationId.value)
+  const current = uploadJobs.value.filter((job) => job.knowledge_base_id === currentKnowledgeBaseId.value || job.conversation_id === currentConversationId.value)
   return current.find((job) => ['queued', 'processing'].includes(job.status)) || current[0] || null
 })
 const latestAssistant = computed(() => [...messages.value].reverse().find((message) => message.role === 'assistant'))
@@ -192,9 +225,63 @@ async function loadHealth() {
   }
 }
 
+function listPayload(payload, key) { return Array.isArray(payload) ? payload : payload?.[key] || payload?.items || [] }
+
+async function loadKnowledgeBases() {
+  try {
+    knowledgeBases.value = listPayload(await (await request('/knowledge-bases')).json(), 'knowledge_bases')
+    kbError.value = ''
+  } catch (error) { kbError.value = error.message }
+}
+async function selectGameKnowledgeBase(id) {
+  await loadKnowledgeBases()
+  await selectKnowledgeBase(id)
+}
+async function refreshGameContext() {
+  await loadKnowledgeBases()
+  try { await loadSharedDocuments() } catch (error) { ElMessage.error(error.message) }
+}
+async function createKnowledgeBase() {
+  if (!kbTitle.value.trim()) return
+  kbCreating.value = true
+  try {
+    const kb = await (await request('/knowledge-bases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: kbTitle.value.trim(), description: kbDescription.value.trim() }) })).json()
+    await loadKnowledgeBases()
+    kbDialogOpen.value = false
+    kbTitle.value = ''; kbDescription.value = ''
+    await selectKnowledgeBase(kb.id)
+  } catch (error) { ElMessage.error(error.message) } finally { kbCreating.value = false }
+}
+async function loadSharedDocuments() {
+  if (!currentKnowledgeBaseId.value) return
+  const kb = currentKnowledgeBaseId.value
+  const payload = await (await request(`/knowledge-bases/${encodeURIComponent(kb)}/documents`)).json()
+  if (kb !== currentKnowledgeBaseId.value) return
+  documents.value = listPayload(payload, 'document_series').flatMap(series => (series.versions || []).map(version => ({ ...version, filename: series.filename, series_id: series.id })))
+}
+async function selectKnowledgeBase(id) {
+  if (isSending.value || isSelectingConversation.value) return
+  isSelectingConversation.value = true
+  currentKnowledgeBaseId.value = id
+  requestedTaskId.value = null
+  ++conversationSelectionSequence
+  currentConversationId.value = null; conversations.value = []; messages.value = []; documents.value = []; uploadJobs.value = []
+  selectedSource.value = null; sourceDrawerOpen.value = false
+  try {
+    await loadConversations()
+    await loadSharedDocuments(); await loadUploadJobs(null)
+    if (conversations.value.length) await selectConversation(conversations.value[0].id)
+  } catch (error) { ElMessage.error(error.message) }
+  finally { isSelectingConversation.value = false }
+}
+
 async function loadConversations() {
   try {
-    conversations.value = await (await request('/conversations')).json()
+    if (!currentKnowledgeBaseId.value) return
+    const kb = currentKnowledgeBaseId.value
+    const payload = await (await request(`/knowledge-bases/${encodeURIComponent(kb)}/conversations`)).json()
+    if (kb !== currentKnowledgeBaseId.value) return
+    conversations.value = listPayload(payload, 'conversations')
     conversationError.value = ''
   } catch (error) {
     conversationError.value = error.message
@@ -222,26 +309,28 @@ async function loadEvaluation() {
 
 async function loadUploadJobs(conversationId, selection = null) {
   try {
-    const jobs = await (await request(`/uploads?conversation_id=${encodeURIComponent(conversationId)}`)).json()
-    if (selection === null || selection === conversationSelectionSequence) uploadJobs.value = jobs
+    const jobs = await (await request(`/uploads?knowledge_base_id=${encodeURIComponent(currentKnowledgeBaseId.value)}`)).json()
+    if (selection === null || selection === conversationSelectionSequence) uploadJobs.value = listPayload(jobs, 'uploads')
   } catch {
     // Upload status is best-effort; the document list remains authoritative.
   }
 }
 
 async function createConversation() {
+  if (!currentKnowledgeBaseId.value || isSelectingConversation.value) return
+  isSelectingConversation.value = true
   try {
-    const response = await request('/conversations', {
+    const response = await request(`/knowledge-bases/${encodeURIComponent(currentKnowledgeBaseId.value)}/conversations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: '未命名知识库' }),
+      body: JSON.stringify({ title: '新会话' }),
     })
     const conversation = await response.json()
     await loadConversations()
     await selectConversation(conversation.id, true)
   } catch (error) {
     ElMessage.error(error.message)
-  }
+  } finally { isSelectingConversation.value = false }
 }
 
 async function selectConversation(conversationId, force = false) {
@@ -257,11 +346,18 @@ async function selectConversation(conversationId, force = false) {
   try {
     const [messageResponse, documentResponse] = await Promise.all([
       request(`/conversations/${conversationId}/messages`),
-      request(`/conversations/${conversationId}/documents`),
+      request(`/knowledge-bases/${encodeURIComponent(currentKnowledgeBaseId.value)}/documents`),
     ])
     if (selection !== conversationSelectionSequence) return
-    messages.value = await messageResponse.json()
-    documents.value = await documentResponse.json()
+    messages.value = (await messageResponse.json()).map((message) => ({
+      ...message,
+      retrievalTrace: message.retrievalTrace || message.retrieval_trace || null,
+      citationValidation: message.citationValidation || message.citation_validation || null,
+      researchTrace: message.researchTrace || message.retrievalTrace?.research || message.retrieval_trace?.research || null,
+      claimAudit: message.claimAudit || message.citationValidation?.semantic_audit || message.citation_validation?.semantic_audit || null,
+    }))
+    const series = listPayload(await documentResponse.json(), 'document_series')
+    documents.value = series.flatMap(item => (item.versions || []).map(version => ({ ...version, filename: item.filename, series_id: item.id })))
     await loadUploadJobs(conversationId, selection)
     if (selection === conversationSelectionSequence) scrollToBottom(true)
   } catch (error) {
@@ -282,9 +378,32 @@ function sourceById(message, sourceId) {
   return message.sources?.find((source) => source.id === sourceId) || null
 }
 
-function openSource(source) {
+function openSource(source, quote = '') {
   selectedSource.value = source
+  highlightedQuote.value = typeof quote === 'string' ? quote : ''
   sourceDrawerOpen.value = true
+}
+
+function openEvidence(message, evidence) {
+  // Graph source_id can identify a document rather than this answer's citation.
+  // If an edge carries an evidence id, never fall back to the file's first block.
+  const source = evidence.evidence_id
+    ? message.sources?.find((item) =>
+      [item.evidence_id, item.chunk_id, item.child_chunk_id, ...(item.child_chunk_ids || [])].includes(evidence.evidence_id) ||
+      (item.evidence || []).some((hit) => [hit.evidence_id, hit.chunk_id, hit.child_chunk_id].includes(evidence.evidence_id)))
+    : sourceById(message, evidence.source_id)
+  if (source) openSource(source, evidence.quote)
+  else if (evidence.quote) openSource({ ...evidence, id: evidence.evidence_id || evidence.source_id, content: evidence.quote, quote_only: true }, evidence.quote)
+  else ElMessage.warning('本次响应未提供该来源的原文。')
+}
+
+function sectionLabel(source) {
+  if (source?.section) return source.section
+  let path = source?.section_path
+  if (typeof path === 'string') {
+    try { path = JSON.parse(path) } catch { return path || '未提供章节' }
+  }
+  return Array.isArray(path) ? path.join(' > ') : '未提供章节'
 }
 
 function openMessageSource(message, sourceId) {
@@ -468,6 +587,10 @@ async function handleUpload(event) {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('conversation_id', uploadConversationId)
+  formData.append('knowledge_base_id', currentKnowledgeBaseId.value)
+  if (activeKnowledgeBase.value?.game_profile) {
+    formData.append('domain_metadata', JSON.stringify({ ...activeKnowledgeBase.value.game_profile, source_kind: 'reference', source_tier: 'player', provenance: 'user_declared' }))
+  }
   isUploading.value = true
   let uploaded = null
   let pollingStarted = false
@@ -496,9 +619,9 @@ async function handleUpload(event) {
         upsertUpload(task)
         if (task.status === 'completed') {
           if (currentConversationId.value === uploadConversationId && conversationSelectionSequence === uploadSelection) {
-            const refreshedDocuments = await (await request(`/conversations/${uploadConversationId}/documents`)).json()
+            const refreshedDocuments = await (await request(`/knowledge-bases/${encodeURIComponent(currentKnowledgeBaseId.value)}/documents`)).json()
             if (currentConversationId.value === uploadConversationId && conversationSelectionSequence === uploadSelection) {
-              documents.value = refreshedDocuments
+              documents.value = listPayload(refreshedDocuments, 'document_series').flatMap(item => (item.versions || []).map(version => ({ ...version, filename: item.filename })))
               await loadUploadJobs(uploadConversationId, uploadSelection)
             }
           }
@@ -560,7 +683,7 @@ async function sendMessage() {
   const question = input.value.trim()
   if (!question || isSending.value || isSelectingConversation.value) return
   if (!currentConversationId.value) {
-    ElMessage.warning('请先创建知识库会话')
+    ElMessage.warning('请先选择知识库并新建会话')
     return
   }
   const conversationIdAtSend = currentConversationId.value
@@ -573,6 +696,8 @@ async function sendMessage() {
     sources: [],
     citationValidation: { status: 'checking' },
     retrievalTrace: null,
+    researchTrace: null,
+    claimAudit: null,
   })
   messages.value.push(userMessage, assistantMessage)
   const messagePayload = JSON.parse(JSON.stringify(messages.value))
@@ -584,7 +709,7 @@ async function sendMessage() {
     const response = await request(`/chat/${conversationIdAtSend}`,  {
       method: 'POST',
       headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: messagePayload }),
+      body: JSON.stringify({ messages: messagePayload, mode: researchMode.value, graph_enabled: graphEnabled.value, audit_enabled: auditEnabled.value }),
     })
     if (!response.body) throw new Error('浏览器不支持流式响应')
     const contentType = response.headers.get('content-type') || ''
@@ -617,9 +742,16 @@ async function sendMessage() {
       }
       if (event.type === 'text-delta') assistantMessage.parts[0].text += event.delta || ''
       if (event.type === 'data-sources') assistantMessage.sources = event.data || []
-      if (event.type === 'retrieval-trace') assistantMessage.retrievalTrace = event.data
+      if (event.type === 'research-progress') assistantMessage.researchTrace = event.data
+      if (event.type === 'claim-audit-start') assistantMessage.claimAudit = event.data || { status: 'checking' }
+      if (event.type === 'claim-audit') assistantMessage.claimAudit = event.data
+      if (event.type === 'retrieval-trace') {
+        assistantMessage.retrievalTrace = event.data
+        if (event.data?.research) assistantMessage.researchTrace = event.data.research
+      }
       if (event.type === 'citation-validation') {
         assistantMessage.citationValidation = event.data
+        if (event.data?.semantic_audit) assistantMessage.claimAudit = event.data.semantic_audit
         streamState.citationReceived = true
       }
       if (event.type === 'error') assistantMessage.parts[0].text += `\n\n${event.errorText || '流式生成失败'}`
@@ -665,6 +797,12 @@ async function sendMessage() {
     assistantMessage.citationValidation = { status: 'generation_failed', warnings: ['请求未完成'] }
   } finally {
     activeReader = null
+    if (['planning', 'retrieving', 'assessing'].includes(assistantMessage.researchTrace?.status)) {
+      assistantMessage.researchTrace = { ...assistantMessage.researchTrace, status: 'partial' }
+    }
+    if (assistantMessage.claimAudit?.status === 'checking') {
+      assistantMessage.claimAudit = { ...assistantMessage.claimAudit, status: 'unavailable', disclaimer: '流式响应结束但未返回核验结果；语义判断不是事实证明。' }
+    }
     isSending.value = false
     scrollToBottom(true)
   }
@@ -686,8 +824,8 @@ watch(viewMode, observeComposerArea)
 
 onMounted(async () => {
   observeComposerArea()
-  await Promise.all([loadHealth(), loadConversations(), loadEvaluation()])
-  if (conversations.value.length) await selectConversation(conversations.value[0].id)
+  await Promise.all([loadHealth(), loadKnowledgeBases(), loadEvaluation()])
+  if (knowledgeBases.value.length) await selectKnowledgeBase(knowledgeBases.value[0].id)
 })
 onBeforeUnmount(() => {
   disposed = true
@@ -708,10 +846,14 @@ onBeforeUnmount(() => {
         </span>
       </div>
 
-      <el-button class="new-space-button" type="primary" :icon="Plus" :disabled="isSending || isSelectingConversation" @click="createConversation">新建知识库</el-button>
+      <el-button class="new-space-button" type="primary" :icon="Plus" :disabled="isSending || isSelectingConversation" @click="kbDialogOpen = true">新建知识库</el-button>
 
-      <nav class="conversation-nav" aria-label="历史知识库">
-        <p class="nav-label">最近知识库</p>
+      <nav class="conversation-nav" aria-label="知识库与会话">
+        <p class="nav-label">共享知识库</p>
+        <p v-if="kbError" class="empty-nav" role="alert">{{ kbError }} <el-button text @click="loadKnowledgeBases">重试</el-button></p>
+        <button v-for="kb in knowledgeBases" :key="kb.id" class="conversation-item" :class="{ active: kb.id === currentKnowledgeBaseId }" type="button" :disabled="isSending || isSelectingConversation" @click="selectKnowledgeBase(kb.id)"><el-icon aria-hidden="true"><Document /></el-icon><span class="conversation-copy"><strong>{{ kb.title }}</strong><small>{{ kb.description || '会话与任务共享资料' }}</small></span></button>
+        <p v-if="!knowledgeBases.length && !kbError" class="empty-nav">新建知识库，集中管理共享资料。</p>
+        <div v-if="currentKnowledgeBaseId" class="secondary-nav-heading"><p class="nav-label">库内会话</p><el-button text :disabled="isSending || isSelectingConversation" @click="createConversation">新建会话</el-button></div>
         <button
           v-for="conversation in conversations"
           :key="conversation.id"
@@ -727,7 +869,7 @@ onBeforeUnmount(() => {
             <small>{{ formatTime(conversation.updated_at) }}</small>
           </span>
         </button>
-        <p v-if="!conversations.length" class="empty-nav">创建知识库，上传资料后开始问答。</p>
+        <p v-if="!conversations.length" class="empty-nav">新建会话开始问答；同一知识库内资料共享。</p>
       </nav>
 
       <button class="evaluation-nav" :class="{ active: viewMode === 'evaluation' }" type="button" @click="viewMode = 'evaluation'">
@@ -748,8 +890,8 @@ onBeforeUnmount(() => {
     <section class="workspace">
       <header class="workspace-header">
         <div>
-          <p class="eyebrow">{{ viewMode === 'chat' ? '知识库工作台' : '检索质量实验室' }}</p>
-          <h1>{{ viewMode === 'chat' ? (activeConversation?.title || '选择或创建知识库') : '检索评测结果' }}</h1>
+          <p class="eyebrow">{{ viewMode === 'evaluation' ? '检索质量实验室' : '共享知识工作台' }}</p>
+          <h1>{{ viewMode === 'evaluation' ? '检索评测结果' : (activeKnowledgeBase?.title || '选择或创建知识库') }}</h1>
         </div>
         <div class="header-actions">
           <div class="view-tabs" role="tablist" aria-label="工作台视图" @keydown="onTabKeydown">
@@ -822,9 +964,9 @@ onBeforeUnmount(() => {
             <p>上传资料后，系统会记录解析、切分、向量写入和来源定位；回答中的每个 [S#] 都能回到实际证据。</p>
             <el-button type="primary" :icon="DocumentAdd" :disabled="isSending || isSelectingConversation || !currentConversationId" @click="triggerUpload">上传第一份资料</el-button>
             <div class="capability-grid">
-              <div><strong>四路检索评测</strong><span>Vector / BM25 / RRF / Rerank 在同一标注集上对比</span></div>
-              <div><strong>引用结构校验</strong><span>校验来源编号，不把结构检查冒充事实证明</span></div>
-              <div><strong>失败可解释</strong><span>检索降级与索引阶段都留下可回看的轨迹</span></div>
+              <div><strong>结构索引与多跳研究</strong><span>保留章节定位，按证据缺口逐轮检索，计划与成本可追溯</span></div>
+              <div><strong>逐结论语义核验</strong><span>区分支持、矛盾与证据不足；模型判断不是事实证明</span></div>
+              <div><strong>关系证据与真实评测</strong><span>实体关系可查原文，四路检索继续在同一标注集上对比</span></div>
             </div>
           </div>
 
@@ -841,6 +983,9 @@ onBeforeUnmount(() => {
                 </template>
                 <template v-else>{{ message.parts?.[0]?.text }}</template>
               </div>
+
+              <ResearchPanel v-if="message.role === 'assistant'" :trace="message.researchTrace || message.retrievalTrace?.research" :context="message.retrievalTrace?.context" @open-evidence="openEvidence(message, $event)" />
+              <ClaimAudit v-if="message.role === 'assistant'" :audit="message.claimAudit || message.citationValidation?.semantic_audit" @open-evidence="openEvidence(message, $event)" />
 
               <section v-if="message.role === 'assistant' && message.retrievalTrace" class="trace-card" :class="message.retrievalTrace.status">
                 <div class="trace-heading">
@@ -886,6 +1031,17 @@ onBeforeUnmount(() => {
 
         <footer ref="composerArea" class="composer-area">
           <form class="composer" @submit.prevent="sendMessage">
+            <fieldset class="research-controls" :disabled="isSending || isSelectingConversation || !currentConversationId">
+              <legend class="sr-only">本次问答选项</legend>
+              <label for="research-mode">回答模式
+                <select id="research-mode" v-model="researchMode" aria-describedby="research-mode-hint">
+                  <option value="auto">自动</option><option value="quick">快速</option><option value="research">深度研究</option>
+                </select>
+              </label>
+              <label class="research-toggle"><input v-model="graphEnabled" type="checkbox" />关系图增强</label>
+              <label class="research-toggle"><input v-model="auditEnabled" type="checkbox" />逐结论核验</label>
+            </fieldset>
+            <p id="research-mode-hint" class="composer-option-note">自动按问题选择检索深度；快速使用单轮检索；深度研究逐轮查找缺口。</p>
             <label class="sr-only" for="question">向知识库提问</label>
             <el-input id="question" v-model="input" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" resize="none" placeholder="例如：这份方案的风险与待确认事项是什么？" :disabled="isSending || isSelectingConversation || !currentConversationId" @keydown.enter.exact.prevent="sendMessage" />
             <div class="composer-actions">
@@ -893,11 +1049,11 @@ onBeforeUnmount(() => {
               <el-button native-type="submit" type="primary" :icon="Promotion" :loading="isSending" :disabled="!input.trim() || isSelectingConversation || !currentConversationId">发送</el-button>
             </div>
           </form>
-          <p>回答基于已上传资料生成；Enter 发送，Shift + Enter 换行；引用校验只验证编号，重要信息请回看原文。</p>
+          <p>回答基于已上传资料生成；Enter 发送，Shift + Enter 换行；语义核验是模型判断，不是事实证明，重要信息请回看原文。</p>
         </footer>
       </section>
 
-      <section v-else id="evaluation-panel" class="evaluation-view" role="tabpanel" :aria-labelledby="VIEW_TABS[1].tabId">
+      <section v-else-if="viewMode === 'evaluation'" id="evaluation-panel" class="evaluation-view" role="tabpanel" :aria-labelledby="VIEW_TABS[3].tabId">
         <div class="evaluation-intro">
           <div>
             <p class="eyebrow">Retrieval-only benchmark</p>
@@ -952,13 +1108,46 @@ onBeforeUnmount(() => {
 
         <section class="method-note"><el-icon aria-hidden="true"><InfoFilled /></el-icon><p><strong>如何读结果：</strong>Recall 看相关证据有没有被召回，MRR 看第一个相关片段出现得早不早，nDCG 还会考虑相关性等级。它们衡量检索排序，不等于回答事实正确性；引用校验也只验证编号结构。</p></section>
       </section>
+      <section v-else-if="viewMode === 'tasks'" id="tasks-panel" class="v2-view" role="tabpanel" aria-labelledby="view-tab-tasks"><TaskWorkspace :knowledge-base-id="currentKnowledgeBaseId" :initial-task-id="requestedTaskId" :request="request" @open-source="openSource" /></section>
+      <section v-else-if="viewMode === 'documents'" id="documents-panel" class="v2-view" role="tabpanel" aria-labelledby="view-tab-documents"><DocumentLibrary :knowledge-base-id="currentKnowledgeBaseId" :game-profile="activeKnowledgeBase?.game_profile" :conversation-id="currentConversationId" :request="request" @changed="loadSharedDocuments" @open-task="openTask" /></section>
+      <section v-else-if="viewMode === 'souls'" id="souls-panel" class="v2-view" role="tabpanel" aria-labelledby="view-tab-souls">
+        <SoulsWorkspace :knowledge-base="activeKnowledgeBase" :knowledge-bases="knowledgeBases" :request="request" @open-task="openTask" @select-knowledge-base="selectGameKnowledgeBase" @changed="refreshGameContext" />
+      </section>
     </section>
 
+    <el-dialog v-model="kbDialogOpen" title="新建共享知识库" width="min(480px, 92vw)"><form class="v2-form" @submit.prevent="createKnowledgeBase"><label>知识库名称<input v-model="kbTitle" required maxlength="160" /></label><label>说明<textarea v-model="kbDescription" rows="3" /></label><p class="panel-note">会话与研究任务共享库内资料，新建会话不会创建新知识库。</p><el-button native-type="submit" type="primary" :loading="kbCreating" :disabled="!kbTitle.trim()">创建知识库</el-button></form></el-dialog>
     <el-drawer v-model="sourceDrawerOpen" title="证据详情" size="min(440px, 92vw)" direction="rtl">
       <template v-if="selectedSource">
         <p class="drawer-label">{{ selectedSource.id }} · {{ selectedSource.retrieval_method || 'evidence' }}</p>
         <h2>{{ selectedSource.filename }}</h2>
-        <p class="source-excerpt">{{ selectedSource.excerpt || '没有返回片段摘要。' }}</p>
+        <a v-if="/^https?:\/\//i.test(selectedSource.url || selectedSource.domain_metadata?.url || '')" :href="selectedSource.url || selectedSource.domain_metadata?.url" target="_blank" rel="noopener noreferrer">查看来源原文</a>
+        <p v-if="selectedSource.domain_metadata?.game_id" class="panel-note">游戏条件：{{ selectedSource.domain_metadata.game_id }} · {{ selectedSource.domain_metadata.edition || '版本未知' }} · 补丁 {{ selectedSource.domain_metadata.patch || '未知' }} · {{ selectedSource.domain_metadata.mode || '玩法未知' }} · {{ selectedSource.domain_metadata.provenance || '未核验' }}</p>
+        <p class="panel-note">章节：{{ sourceSections }}</p>
+        <p v-if="selectedSource.quote_only" class="panel-note">该关系证据未进入本次回答的最终上下文，不是本次回答的引用来源；仅展示知识库原文摘录。</p>
+        <p v-else-if="selectedSource.content == null" class="panel-note">服务未返回完整 content，以下为现有摘要。</p>
+        <p v-if="highlightedQuote && !sourceContent.includes(highlightedQuote)" class="panel-note">引用文本未在本次内容中精确匹配，保留原文不做模糊高亮。</p>
+        <blockquote v-if="highlightedQuote" class="source-excerpt">{{ highlightedQuote }}</blockquote>
+        <h3 class="evidence-content-title">{{ selectedSource.quote_only ? '引用摘录' : '本次证据全文' }}</h3>
+        <div class="evidence-content"><template v-for="(segment, index) in highlightedContent" :key="index"><mark v-if="segment.highlighted">{{ segment.text }}</mark><span v-else>{{ segment.text }}</span></template></div>
+        <details v-if="selectedSource.context_windows || selectedSource.evidence" class="research-details">
+          <summary>查看上下文窗口与证据定位</summary>
+          <section v-for="(window, index) in selectedSource.context_windows || []" :key="`window-${index}`" class="research-round">
+            <strong>{{ window.block_type === 'table_header' ? '表头' : '上下文窗口' }} · {{ sourceLocation(window) }}</strong>
+            <p class="panel-note">{{ sectionLabel(window) }}</p>
+            <div class="evidence-content">{{ window.content }}</div>
+          </section>
+          <details v-if="selectedSource.evidence?.length" class="research-details">
+            <summary>查看命中片段 · {{ selectedSource.evidence.length }}</summary>
+            <section v-for="(hit, index) in selectedSource.evidence" :key="hit.child_chunk_id || index" class="research-round">
+              <strong>{{ hit.block_type === 'table_header' ? '表头' : '命中片段' }} · {{ sourceLocation(hit) }}</strong>
+              <p class="panel-note">{{ sectionLabel(hit) }} · {{ hit.child_chunk_id || hit.evidence_id || '未提供片段编号' }}<template v-if="hit.truncated"> · 已截断</template></p>
+              <div class="evidence-content">{{ hit.content }}</div>
+            </section>
+          </details>
+        </details>
+        <p v-if="selectedSource.evidence_modality" class="panel-note">证据模态：{{ selectedSource.evidence_modality }} · {{ selectedSource.region_type || '未标区域' }}<template v-if="selectedSource.bbox"> · 定位 {{ selectedSource.bbox }}</template></p>
+        <p v-if="selectedSource.evidence_modality === 'image' || selectedSource.evidence_modality === 'caption'" class="panel-note">模型描述的一致性不等于图表实际准确，请查原始页面与区域。</p>
+        <PageEvidenceViewer v-if="selectedSource.version_id || selectedSource.document_version_id" :version-id="selectedSource.version_id || selectedSource.document_version_id" :initial-page-number="selectedSource.page_number" :initial-bbox="selectedSource.bbox" :request="request" />
         <dl class="source-details">
           <div><dt>定位</dt><dd>{{ sourceLocation(selectedSource) }}</dd></div>
           <div><dt>Evidence ID</dt><dd class="mono">{{ selectedSource.evidence_id || selectedSource.chunk_id || '未提供' }}</dd></div>
@@ -971,6 +1160,6 @@ onBeforeUnmount(() => {
       </template>
     </el-drawer>
 
-    <input ref="fileInput" class="sr-only" tabindex="-1" aria-label="选择要索引的资料文件" type="file" accept=".txt,.md,.pdf,.docx,.csv,.json,.py,.log" @change="handleUpload" />
+    <input ref="fileInput" class="sr-only" tabindex="-1" aria-label="选择要索引的资料文件" type="file" accept=".txt,.md,.pdf,.docx,.csv,.json,.py,.log,.png,.jpg,.jpeg,.webp" @change="handleUpload" />
   </main>
 </template>
